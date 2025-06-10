@@ -41,6 +41,20 @@ foreach ($notes_tables as $table) {
     }
 }
 
+// Count notes by session for notes_print
+$notes_print_sessions = [];
+$sessions_query = "SELECT session, COUNT(*) as count FROM notes_print WHERE apoL_a01_code = ? GROUP BY session";
+$sessions_stmt = $conn->prepare($sessions_query);
+if ($sessions_stmt) {
+    $sessions_stmt->bind_param('s', $apogee);
+    $sessions_stmt->execute();
+    $sessions_result = $sessions_stmt->get_result();
+    while ($row = $sessions_result->fetch_assoc()) {
+        $notes_print_sessions[$row['session']] = $row['count'];
+    }
+    $sessions_stmt->close();
+}
+
 // Count reclamations
 $reclamations_count = countRecords($conn, 'reclamations', 'apoL_a01_code = ?', [$apogee]);
 
@@ -55,7 +69,8 @@ $recent_notes = [];
 foreach ($notes_tables as $table) {
     $table_check = $conn->query("SHOW TABLES LIKE '$table'");
     if ($table_check && $table_check->num_rows > 0) {
-        $query = "SELECT nom_module, note, adding_date, '$table' as source FROM `$table` WHERE apoL_a01_code = ? ORDER BY adding_date DESC LIMIT 5";
+        $session_field = $table === 'notes_print' ? ', session' : '';
+        $query = "SELECT nom_module, note, adding_date{$session_field}, '$table' as source FROM `$table` WHERE apoL_a01_code = ? ORDER BY adding_date DESC LIMIT 5";
         $stmt = $conn->prepare($query);
         $stmt->bind_param('s', $apogee);
         $stmt->execute();
@@ -225,7 +240,29 @@ include 'header.php';
                     </div>
                 </div>
 
-                <!-- Spring Session -->
+                <!-- Automne Session from notes_print -->
+                <div class="col-md-6 mb-3">
+                    <div class="card border-0 shadow-sm hover-card h-100">
+                        <div class="card-body d-flex flex-column p-4" style="background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%); color: white; border-radius: 12px;">
+                            <div class="d-flex justify-content-between align-items-start mb-3">
+                                <h5 class="card-title mb-0">
+                                    <i style="font-size: 1.5rem;">🍂</i> Session Automne
+                                </h5>
+                                <span class="badge bg-light text-dark">
+                                    <?= $notes_print_sessions['automne'] ?? 0 ?> notes
+                                </span>
+                            </div>
+                            <p class="card-text flex-grow-1 opacity-75">
+                                Session d'automne - Licence Fondamentale
+                            </p>
+                            <a href="resultat_print.php?session=automne" class="btn btn-light btn-sm">
+                                <i style="font-size: 0.9rem;">👀</i> Voir les détails
+                            </a>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Spring Session from notes_print -->
                 <div class="col-md-6 mb-3">
                     <div class="card border-0 shadow-sm hover-card h-100 position-relative">
                         <div class="ribbon">Nouveau</div>
@@ -234,12 +271,14 @@ include 'header.php';
                                 <h5 class="card-title mb-0">
                                     <i style="font-size: 1.5rem;">🌸</i> Session Printemps
                                 </h5>
-                                <span class="badge bg-light text-dark">Printemps 2024</span>
+                                <span class="badge bg-light text-dark">
+                                    <?= $notes_print_sessions['printemps'] ?? 0 ?> notes
+                                </span>
                             </div>
                             <p class="card-text flex-grow-1 opacity-75">
                                 Session de printemps - Licence Fondamentale
                             </p>
-                            <a href="resultat_print.php" class="btn btn-light btn-sm">
+                            <a href="resultat_print.php?session=printemps" class="btn btn-light btn-sm">
                                 <i style="font-size: 0.9rem;">👀</i> Voir les détails
                             </a>
                         </div>
@@ -249,17 +288,17 @@ include 'header.php';
                 <!-- Rattrapage Session -->
                 <div class="col-md-6 mb-3">
                     <div class="card border-0 shadow-sm hover-card h-100">
-                        <div class="card-body d-flex flex-column p-4" style="background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%); color: white; border-radius: 12px;">
+                        <div class="card-body d-flex flex-column p-4" style="background: linear-gradient(135deg, #ffecd2 0%, #fcb69f 100%); color: #333; border-radius: 12px;">
                             <div class="d-flex justify-content-between align-items-start mb-3">
                                 <h5 class="card-title mb-0">
                                     <i style="font-size: 1.5rem;">🔄</i> Rattrapage
                                 </h5>
-                                <span class="badge bg-light text-dark">Automne 2024</span>
+                                <span class="badge bg-secondary text-white">Automne 2024</span>
                             </div>
-                            <p class="card-text flex-grow-1 opacity-75">
+                            <p class="card-text flex-grow-1">
                                 Résultats de rattrapage - Licence Fondamentale
                             </p>
-                            <a href="resultat_ratt.php" class="btn btn-light btn-sm">
+                            <a href="resultat_ratt.php" class="btn btn-dark btn-sm">
                                 <i style="font-size: 0.9rem;">👀</i> Voir les détails
                             </a>
                         </div>
@@ -267,20 +306,19 @@ include 'header.php';
                 </div>
 
                 <!-- Excellence Center -->
-                <div class="col-md-6 mb-3">
+                <div class="col-md-12 mb-3">
                     <div class="card border-0 shadow-sm hover-card h-100">
-                        <div class="card-body d-flex flex-column p-4" style="background: linear-gradient(135deg, #ffecd2 0%, #fcb69f 100%); color: #333; border-radius: 12px;">
+                        <div class="card-body d-flex flex-column p-4" style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; border-radius: 12px;">
                             <div class="d-flex justify-content-between align-items-start mb-3">
                                 <h5 class="card-title mb-0">
-                                    <i style="font-size: 1.5rem;">🏆</i> Excellence
+                                    <i style="font-size: 1.5rem;">🏆</i> Centre d'Excellence
                                 </h5>
-                                <span class="badge bg-warning text-dark">Centre d'Excellence</span>
+                                <span class="badge bg-warning text-dark">خاص بمسالك التميز</span>
                             </div>
-                            <p class="card-text flex-grow-1">
-                                خاص بمسالك التميز<br>
-                                <small>Centre D'excellence</small>
+                            <p class="card-text flex-grow-1 opacity-75">
+                                Centre D'excellence - مسالك التميز
                             </p>
-                            <a href="resultat_exc.php" class="btn btn-dark btn-sm">
+                            <a href="resultat_exc.php" class="btn btn-light btn-sm">
                                 <i style="font-size: 0.9rem;">👀</i> Voir les détails
                             </a>
                         </div>
@@ -320,7 +358,19 @@ include 'header.php';
                                             </td>
                                             <td class="px-4 py-3">
                                                 <span class="badge bg-info">
-                                                    <?= str_replace('notes_', '', $note['source']) ?>
+                                                    <?php
+                                                    $source_display = str_replace('notes_', '', $note['source']);
+                                                    if ($note['source'] === 'notes_print' && isset($note['session'])) {
+                                                        $source_display = $note['session'] === 'printemps' ? '🌸 Printemps' : '🍂 Automne';
+                                                    } elseif ($note['source'] === 'notes') {
+                                                        $source_display = 'Normal';
+                                                    } elseif ($note['source'] === 'notes_ratt') {
+                                                        $source_display = 'Rattrapage';
+                                                    } elseif ($note['source'] === 'notes_exc') {
+                                                        $source_display = 'Excellence';
+                                                    }
+                                                    echo $source_display;
+                                                    ?>
                                                 </span>
                                             </td>
                                             <td class="px-4 py-3">
@@ -351,6 +401,36 @@ include 'header.php';
 
         <!-- Sidebar Section -->
         <div class="col-lg-4">
+            <!-- Session Statistics -->
+            <?php if (!empty($notes_print_sessions)): ?>
+            <div class="card border-0 shadow-sm mb-4">
+                <div class="card-header bg-white border-0 p-4">
+                    <h5 class="mb-0">
+                        <i style="font-size: 1.2rem;">📊</i> Statistiques par Session
+                    </h5>
+                </div>
+                <div class="card-body p-4">
+                    <?php foreach ($notes_print_sessions as $session => $count): ?>
+                        <div class="d-flex justify-content-between align-items-center mb-3">
+                            <div class="d-flex align-items-center">
+                                <span style="font-size: 1.5rem; margin-right: 10px;">
+                                    <?= $session === 'printemps' ? '🌸' : '🍂' ?>
+                                </span>
+                                <div>
+                                    <h6 class="mb-0"><?= ucfirst($session) ?></h6>
+                                    <small class="text-muted">Session 2024-25</small>
+                                </div>
+                            </div>
+                            <div class="text-end">
+                                <span class="badge bg-primary fs-6"><?= $count ?></span>
+                                <br><small class="text-muted">notes</small>
+                            </div>
+                        </div>
+                    <?php endforeach; ?>
+                </div>
+            </div>
+            <?php endif; ?>
+
             <!-- Quick Actions -->
             <div class="card border-0 shadow-sm mb-4">
                 <div class="card-header bg-white border-0 p-4">

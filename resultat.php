@@ -13,6 +13,14 @@ $student = $_SESSION['student'];
 // Include the database connection
 require_once 'db.php';
 
+// Get selected session or default to 'automne'
+$selected_session = isset($_GET['session']) ? $_GET['session'] : 'automne';
+
+// Validate session
+if (!in_array($selected_session, ['automne', 'printemps'])) {
+    $selected_session = 'automne';
+}
+
 // Display success message
 if (isset($_SESSION['success_message'])) {
     echo '
@@ -33,13 +41,12 @@ if (isset($_SESSION['error_message'])) {
     unset($_SESSION['error_message']);
 }
 
-// Fetch notes from both tables - prioritize notes_print for current exam results
+// Fetch notes for the logged-in student for selected session
 $query = "
     SELECT
-        'current' as source_type,
         n.nom_module AS default_name,
         n.note,
-        NULL as validite,
+        n.session,
         ma.nom_module AS arabic_name,
         n.adding_date,
         EXISTS (
@@ -51,34 +58,8 @@ $query = "
         TIMESTAMPDIFF(HOUR, n.adding_date, NOW()) AS hours_since_addition
     FROM notes_print n
     LEFT JOIN mod_arabe ma ON n.code_module = ma.code_module
-    WHERE n.apoL_a01_code = ?
-
-    UNION ALL
-
-    SELECT
-        'historical' as source_type,
-        n.nom_module AS default_name,
-        n.note,
-        n.validite,
-        ma.nom_module AS arabic_name,
-        n.adding_date,
-        EXISTS (
-            SELECT 1
-            FROM reclamations r
-            WHERE r.apoL_a01_code = n.apoL_a01_code
-              AND r.default_name = n.nom_module
-        ) AS reclamation_sent,
-        TIMESTAMPDIFF(HOUR, n.adding_date, NOW()) AS hours_since_addition
-    FROM notes n
-    LEFT JOIN mod_arabe ma ON n.code_module = ma.code_module
-    WHERE n.apoL_a01_code = ?
-    AND NOT EXISTS (
-        SELECT 1 FROM notes_print np
-        WHERE np.apoL_a01_code = n.apoL_a01_code
-        AND np.nom_module = n.nom_module
-    )
-
-    ORDER BY source_type, adding_date DESC
+    WHERE n.apoL_a01_code = ? AND n.session = ?
+    ORDER BY n.adding_date DESC
 ";
 
 if (!isset($student['apoL_a01_code'])) {
@@ -91,39 +72,35 @@ if (!$stmt) {
     die("SQL Error: " . htmlspecialchars($conn->error));
 }
 
-$stmt->bind_param("ss", $student['apoL_a01_code'], $student['apoL_a01_code']);
+$stmt->bind_param("ss", $student['apoL_a01_code'], $selected_session);
 $stmt->execute();
 $result = $stmt->get_result();
 
 // Fetch notes as an array
 $notes = [];
-$current_notes = [];
-$historical_notes = [];
-
 while ($row = $result->fetch_assoc()) {
     $notes[] = $row;
-    if ($row['source_type'] === 'current') {
-        $current_notes[] = $row;
-    } else {
-        $historical_notes[] = $row;
-    }
 }
 
 $stmt->close();
 
-// Get unique modules for reclamation dropdown
-$modules_query = "
-    SELECT DISTINCT nom_module
-    FROM (
-        SELECT nom_module FROM notes_print WHERE apoL_a01_code = ?
-        UNION
-        SELECT nom_module FROM notes WHERE apoL_a01_code = ?
-    ) as all_modules
-    ORDER BY nom_module
-";
+// Get available sessions for this student
+$sessions_query = "SELECT DISTINCT session FROM notes_print WHERE apoL_a01_code = ? ORDER BY session";
+$sessions_stmt = $conn->prepare($sessions_query);
+$sessions_stmt->bind_param("s", $student['apoL_a01_code']);
+$sessions_stmt->execute();
+$sessions_result = $sessions_stmt->get_result();
 
+$available_sessions = [];
+while ($row = $sessions_result->fetch_assoc()) {
+    $available_sessions[] = $row['session'];
+}
+$sessions_stmt->close();
+
+// Get unique modules for reclamation dropdown
+$modules_query = "SELECT DISTINCT nom_module FROM notes_print WHERE apoL_a01_code = ? AND session = ? ORDER BY nom_module";
 $modules_stmt = $conn->prepare($modules_query);
-$modules_stmt->bind_param("ss", $student['apoL_a01_code'], $student['apoL_a01_code']);
+$modules_stmt->bind_param("ss", $student['apoL_a01_code'], $selected_session);
 $modules_stmt->execute();
 $modules_result = $modules_stmt->get_result();
 
@@ -134,95 +111,23 @@ while ($row = $modules_result->fetch_assoc()) {
 $modules_stmt->close();
 
 $professors = [
-    'pr.ait laaguid',
-    'pr.aloui',
-    'pr.badr dahbi',
-    'pr.belbesbes',
-    'pr.belkadi',
-    'pr.benbounou',
-    'pr.benmansour',
-    'pr.boudiab',
-    'pr.bouhmidi',
-    'pr.bouzekraoui',
-    'pr.brouksy',
-    'pr.echcharyf',
-    'pr.el idrissi',
-    'pr.es-sehab',
-    'pr.karim',
-    'pr.maatouk',
-    'pr.majidi',
-    'Pr.meftah',
-    'pr.moussadek',
-    'pr.ouakasse',
-    'pr.oualji',
-    'pr.qorchi',
-    'pr.rafik',
-    'pr.setta',
-    'ذ,جفري',
-    'ذ. الشداوي',
-    'ذ. العمراني',
-    'ذ. أوهاروش',
-    'ذ. رحو',
-    'ذ. عباد',
-    'ذ. قصبي',
-    'ذ. نعناني',
-    'ذ.إ.الحافظي',
-    'ذ.البوشيخي',
-    'ذ.البوهالي',
-    'ذ.الحجاجي',
-    'ذ.الذهبي',
-    'ذ.الرقاي',
-    'ذ.السكتاني',
-    'ذ.السيتر',
-    'ذ.الشداوي',
-    'ذ.الشرغاوي',
-    'ذ.الشيكر',
-    'ذ.الصابونجي',
-    'ذ.الطيبي',
-    'ذ.العاشيري',
-    'ذ.القاسمي',
-    'ذ.المصبحي',
-    'ذ.المليحي',
-    'ذ.النوحي',
-    'ذ.بنقاسم',
-    'ذ.بوذياب',
-    'ذ.حسون',
-    'ذ.حميدا',
-    'ذ.خربوش',
-    'ذ.خلوقي',
-    'ذ.رحو',
-    'ذ.شحشي',
-    'ذ.طالب',
-    'ذ.عباد',
-    'ذ.عراش',
-    'ذ.قصبي',
-    'ذ.قيبال',
-    'ذ.كموني',
-    'ذ.كواعروس',
-    'ذ.مكاوي',
-    'ذ.ملوكي',
-    'ذ.مهم',
-    'ذ.نعناني',
-    'ذ.هروال',
-    'ذ.يونسي',
-    'ذ.الرقاي',
-    'ذة. افقير',
-    'ذة. الحافضي',
-    'ذة.ابا تراب',
-    'ذة.افقير',
-    'ذة.الرطيمات',
-    'ذة.الصالحي',
-    'ذة.العلمي',
-    'ذة.القشتول',
-    'ذة.بنقاسم',
-    'ذة.سميح',
-    'ذة.فضيل',
-    'ذة.فلاح',
-    'ذة.لبنى المصباحي',
-    'ذة.منال نوحي',
-    'ذة.نوري',
-    'ذة.يحياوي',
-    'ذة.الرطيمات'
+    'pr.ait laaguid', 'pr.aloui', 'pr.badr dahbi', 'pr.belbesbes', 'pr.belkadi',
+    'pr.benbounou', 'pr.benmansour', 'pr.boudiab', 'pr.bouhmidi', 'pr.bouzekraoui',
+    'pr.brouksy', 'pr.echcharyf', 'pr.el idrissi', 'pr.es-sehab', 'pr.karim',
+    'pr.maatouk', 'pr.majidi', 'Pr.meftah', 'pr.moussadek', 'pr.ouakasse',
+    'pr.oualji', 'pr.qorchi', 'pr.rafik', 'pr.setta', 'ذ,جفري', 'ذ. الشداوي',
+    'ذ. العمراني', 'ذ. أوهاروش', 'ذ. رحو', 'ذ. عباد', 'ذ. قصبي', 'ذ. نعناني',
+    'ذ.إ.الحافظي', 'ذ.البوشيخي', 'ذ.البوهالي', 'ذ.الحجاجي', 'ذ.الذهبي',
+    'ذ.الرقاي', 'ذ.السكتاني', 'ذ.السيتر', 'ذ.الشداوي', 'ذ.الشرغاوي',
+    'ذ.الشيكر', 'ذ.الصابونجي', 'ذ.الطيبي', 'ذ.العاشيري', 'ذ.القاسمي',
+    'ذ.المصبحي', 'ذ.المليحي', 'ذ.النوحي', 'ذ.بنقاسم', 'ذ.بوذياب',
+    'ذ.حسون', 'ذ.حميدا', 'ذ.خربوش', 'ذ.خلوقي', 'ذ.رحو', 'ذ.شحشي',
+    'ذ.طالب', 'ذ.عباد', 'ذ.عراش', 'ذ.قصبي', 'ذ.قيبال', 'ذ.كموني',
+    'ذ.كواعروس', 'ذ.مكاوي', 'ذ.ملوكي', 'ذ.مهم', 'ذ.نعناني', 'ذ.هروال',
+    'ذ.يونسي', 'ذ.الرقاي', 'ذة. افقير', 'ذة. الحافضي', 'ذة.ابا تراب',
+    'ذة.افقير', 'ذة.الرطيمات', 'ذة.الصالحي', 'ذة.العلمي', 'ذة.القشتول',
+    'ذة.بنقاسم', 'ذة.سميح', 'ذة.فضيل', 'ذة.فلاح', 'ذة.لبنى المصباحي',
+    'ذة.منال نوحي', 'ذة.نوري', 'ذة.يحياوي', 'ذة.الرطيمات'
 ];
 
 $conn->close();
@@ -233,7 +138,7 @@ $conn->close();
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Résultat</title>
+    <title>Résultat Print</title>
     <link rel="stylesheet" href="bootstrap/css/bootstrap.min.css">
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0-alpha3/dist/js/bootstrap.bundle.min.js"></script>
 
@@ -310,14 +215,6 @@ $conn->close();
                 display: block;
             }
         }
-        .current-note {
-            background-color: #e8f5e8;
-            font-weight: bold;
-        }
-        .historical-note {
-            background-color: #f8f9fa;
-            opacity: 0.8;
-        }
         .admin-access-notice {
             background: linear-gradient(135deg, #ffd700, #ffed4e);
             color: #dc3545;
@@ -327,6 +224,33 @@ $conn->close();
             text-align: center;
             font-weight: bold;
             border: 2px solid rgba(220, 53, 69, 0.2);
+        }
+        .session-selector {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border-radius: 12px;
+            padding: 1.5rem;
+            margin-bottom: 2rem;
+        }
+        .session-btn {
+            margin: 0.25rem;
+            border-radius: 20px;
+            padding: 0.5rem 1.5rem;
+            border: 2px solid rgba(255,255,255,0.3);
+            background: rgba(255,255,255,0.1);
+            color: white;
+            text-decoration: none;
+            transition: all 0.3s ease;
+        }
+        .session-btn:hover {
+            background: rgba(255,255,255,0.2);
+            color: white;
+            transform: translateY(-2px);
+        }
+        .session-btn.active {
+            background: rgba(255,255,255,0.9);
+            color: #667eea;
+            font-weight: bold;
         }
     </style>
 </head>
@@ -383,54 +307,108 @@ $conn->close();
         <nav class="navbar navbar-dark bg-dark d-md-none">
             <div class="container-fluid">
                 <button class="btn btn-outline-light" id="toggleSidebar">☰ Menu</button>
-                <span class="navbar-brand">Tableau de bord</span>
+                <span class="navbar-brand">Résultats Print</span>
             </div>
         </nav>
 
-        <h2 class="mt-4">Notes Session d'automne - normale</h2>
-        <b>2024-2025</b>
+        <!-- Session Selector -->
+        <div class="session-selector">
+            <div class="text-center">
+                <h4 class="mb-3">
+                    <i style="font-size: 1.5rem;">📅</i>
+                    Choisir la Session
+                </h4>
+                <p class="mb-3">Sélectionnez la session pour voir vos résultats</p>
 
-        <!-- Notes Legend -->
-        <?php if (!empty($current_notes) && !empty($historical_notes)): ?>
-        <div class="alert alert-info mt-3">
-            <strong>Légende:</strong>
-            <span class="badge bg-success">Nouvelles notes</span> - Résultats récents |
-            <span class="badge bg-secondary">Notes historiques</span> - Résultats antérieurs
+                <div class="d-flex justify-content-center flex-wrap">
+                    <?php if (in_array('automne', $available_sessions)): ?>
+                        <a href="?session=automne" class="session-btn <?= $selected_session === 'automne' ? 'active' : '' ?>">
+                            🍂 Session d'Automne
+                        </a>
+                    <?php endif; ?>
+
+                    <?php if (in_array('printemps', $available_sessions)): ?>
+                        <a href="?session=printemps" class="session-btn <?= $selected_session === 'printemps' ? 'active' : '' ?>">
+                            🌸 Session de Printemps
+                        </a>
+                    <?php endif; ?>
+                </div>
+
+                <?php if (empty($available_sessions)): ?>
+                    <p class="text-center mt-3">
+                        <small class="opacity-75">Aucune session disponible pour le moment</small>
+                    </p>
+                <?php endif; ?>
+            </div>
         </div>
-        <?php endif; ?>
 
-        <!-- Current Notes Section -->
-        <?php if (!empty($current_notes)): ?>
-        <div class="mt-4">
-            <h4 class="text-success">📊 Résultats récents</h4>
-            <table class="table table-striped table-bordered">
-                <thead class="table-dark">
+        <!-- Results Section -->
+        <div class="d-flex justify-content-between align-items-center mb-3">
+            <div>
+                <h2 class="mt-4">
+                    Notes Session de <?= $selected_session === 'printemps' ? 'Printemps' : 'Automne' ?> - Normale
+                </h2>
+                <b>2024-2025</b>
+            </div>
+            <?php if (count($available_sessions) > 1): ?>
+                <div class="dropdown">
+                    <button class="btn btn-outline-primary dropdown-toggle" type="button" data-bs-toggle="dropdown">
+                        Changer de session
+                    </button>
+                    <ul class="dropdown-menu">
+                        <?php foreach ($available_sessions as $session): ?>
+                            <li>
+                                <a class="dropdown-item <?= $session === $selected_session ? 'active' : '' ?>"
+                                   href="?session=<?= $session ?>">
+                                    <?= $session === 'printemps' ? '🌸 Printemps' : '🍂 Automne' ?>
+                                </a>
+                            </li>
+                        <?php endforeach; ?>
+                    </ul>
+                </div>
+            <?php endif; ?>
+        </div>
+
+        <!-- Notes Table -->
+        <table class="table table-striped table-bordered">
+            <thead class="table-dark">
+                <tr>
+                    <th>Nom du Module</th>
+                    <th>Note</th>
+                    <th>Date d'ajout</th>
+                    <th>Action</th>
+                </tr>
+            </thead>
+            <tbody>
+                <?php if (empty($notes)): ?>
                     <tr>
-                        <th>Nom du Module</th>
-                        <th>Note</th>
-                        <th>Date d'ajout</th>
-                        <th>Action</th>
+                        <td colspan="4" class="text-center text-muted">
+                            <div class="py-4">
+                                <i style="font-size: 3rem;">📋</i>
+                                <h5 class="mt-3">لا توجد نتائج المرجو الإعادة لاحقا</h5>
+                                <p>Aucun résultat disponible pour la session de <?= $selected_session === 'printemps' ? 'Printemps' : 'Automne' ?></p>
+                            </div>
+                        </td>
                     </tr>
-                </thead>
-                <tbody>
-                    <?php foreach ($current_notes as $index => $note): ?>
-                        <tr class="current-note">
+                <?php else: ?>
+                    <?php foreach ($notes as $index => $note): ?>
+                        <tr>
                             <td><?= htmlspecialchars($note['arabic_name'] ?? $note['default_name']) ?></td>
                             <td>
-                                <span class="badge <?= is_numeric($note['note']) && $note['note'] >= 10 ? 'bg-success' : 'bg-danger' ?>">
+                                <span class="badge <?= is_numeric($note['note']) && $note['note'] >= 10 ? 'bg-success' : 'bg-danger' ?> fs-6">
                                     <?= htmlspecialchars($note['note']) ?>
                                 </span>
                             </td>
                             <td>
                                 <small><?= htmlspecialchars(date('d/m/Y H:i', strtotime($note['adding_date']))) ?></small>
-                                <?php if ($note['hours_since_addition'] <= 72): ?>
+                                <?php if ($note['hours_since_addition'] <= 48): ?>
                                     <span class="badge bg-info">Nouveau</span>
                                 <?php endif; ?>
                             </td>
                             <td>
                                 <?php if ($note['reclamation_sent']): ?>
                                     <span class="badge bg-warning">Réclamation envoyée</span>
-                                <?php elseif ($note['hours_since_addition'] <= 72): ?>
+                                <?php elseif ($note['hours_since_addition'] <= 48): ?>
                                     <button class="btn btn-sm btn-outline-primary"
                                             data-bs-toggle="modal"
                                             data-bs-target="#reclamationModal"
@@ -443,49 +421,9 @@ $conn->close();
                             </td>
                         </tr>
                     <?php endforeach; ?>
-                </tbody>
-            </table>
-        </div>
-        <?php endif; ?>
-
-        <!-- Historical Notes Section -->
-        <?php if (!empty($historical_notes)): ?>
-        <div class="mt-4">
-            <h4 class="text-secondary">📚 Notes historiques</h4>
-            <table class="table table-striped table-bordered">
-                <thead class="table-secondary">
-                    <tr>
-                        <th>Nom du Module</th>
-                        <th>Note</th>
-                        <th>Validité</th>
-                        <th>Date</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    <?php foreach ($historical_notes as $note): ?>
-                        <tr class="historical-note">
-                            <td><?= htmlspecialchars($note['arabic_name'] ?? $note['default_name']) ?></td>
-                            <td>
-                                <span class="badge <?= is_numeric($note['note']) && $note['note'] >= 10 ? 'bg-success' : 'bg-danger' ?>">
-                                    <?= htmlspecialchars($note['note']) ?>
-                                </span>
-                            </td>
-                            <td><?= htmlspecialchars($note['validite'] ?? 'N/A') ?></td>
-                            <td><small><?= htmlspecialchars(date('d/m/Y', strtotime($note['adding_date']))) ?></small></td>
-                        </tr>
-                    <?php endforeach; ?>
-                </tbody>
-            </table>
-        </div>
-        <?php endif; ?>
-
-        <!-- No Notes Message -->
-        <?php if (empty($notes)): ?>
-        <div class="alert alert-warning text-center mt-4">
-            <h4>لا توجد نتائج المرجو الإعادة لاحقا</h4>
-            <p>Aucun résultat disponible pour le moment. Veuillez réessayer plus tard.</p>
-        </div>
-        <?php endif; ?>
+                <?php endif; ?>
+            </tbody>
+        </table>
 
         <!-- Reclamation Modal -->
         <div class="modal fade" id="reclamationModal" tabindex="-1" aria-labelledby="reclamationModalLabel" aria-hidden="true">
@@ -498,6 +436,7 @@ $conn->close();
                     <form method="POST" action="submit_reclamation.php" dir="rtl">
                         <div class="modal-body">
                             <input type="hidden" name="apoL_a01_code" value="<?= htmlspecialchars($student['apoL_a01_code']) ?>">
+                            <input type="hidden" name="session_type" value="<?= htmlspecialchars($selected_session) ?>">
 
                             <div class="mb-3">
                                 <label for="default_name" class="form-label">اسم الوحدة</label>
@@ -540,6 +479,15 @@ $conn->close();
                             </div>
 
                             <div class="mb-3">
+                                <label for="semestre" class="form-label">السداسي</label>
+                                <select class="form-control text-end" name="semestre" required>
+                                    <option value="" disabled selected>اختر السداسي</option>
+                                    <option value="1">1</option>
+                                    <option value="3">3</option>
+                                </select>
+                            </div>
+
+                            <div class="mb-3">
                                 <label for="class" class="form-label">مدرج الامتحان</label>
                                 <select name="class" class="form-select" required>
                                     <option value="" disabled selected>اختر مدرج الامتحان</option>
@@ -576,20 +524,22 @@ $conn->close();
             <div class="col-12">
                 <div class="card bg-light border-secondary">
                     <div class="card-body">
+                        <?php if (!empty($notes)): ?>
                         <div class="text-center mt-3">
                             <button class="btn btn-primary btn-lg" data-bs-toggle="modal" data-bs-target="#reclamationModal">
                                 Reclamer
                             </button>
                         </div>
+                        <?php endif; ?>
                         <h5 class="card-title text-center text-danger">Notification importante</h5>
                         <p class="card-text text-center">
                             <strong>
-                                Les réclamations concernant chaque module dont les résultats ont été annoncés sont reçues via la même plateforme dans un délai ne dépassant pas 72 heures.
+                                Les réclamations concernant chaque module dont les résultats ont été annoncés sont reçues via la même plateforme dans un délai ne dépassant pas 48 heures.
                             </strong>
                         </p>
                         <p class="card-text text-center">
                             <strong>
-                                يتم استقبال الشكايات الخاصة بكل وحدة تم الاعلان عن نتائجها، وذلك على نفس المنصة في اجال لا يتعدى 72 ساعة
+                                يتم استقبال الشكايات الخاصة بكل وحدة تم الاعلان عن نتائجها، وذلك على نفس المنصة في اجال لا يتعدى 48 ساعة
                             </strong>
                         </p>
                     </div>

@@ -21,11 +21,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
     try {
         $table_choice = $_POST['table_choice'] ?? '';
+        $session_choice = $_POST['session_choice'] ?? ''; // New session choice
         $file_data = '';
 
         // Validate table choice
         if (!in_array($table_choice, ['notes', 'notes_print'])) {
             throw new Exception("Table invalide sélectionnée.");
+        }
+
+        // Validate session choice for notes_print
+        if ($table_choice === 'notes_print') {
+            if (!in_array($session_choice, ['automne', 'printemps'])) {
+                throw new Exception("Session invalide sélectionnée pour notes_print.");
+            }
         }
 
         // Check if file was uploaded
@@ -47,7 +55,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $results = processJsonImport($conn, $file_data, $table_choice);
             } elseif ($table_choice === 'notes_print' && $file_extension === 'ods') {
                 // Handle ODS file for notes_print table
-                $results = processOdsImport($conn, $_FILES['import_file']['tmp_name'], $table_choice);
+                $results = processOdsImport($conn, $_FILES['import_file']['tmp_name'], $table_choice, $session_choice);
             }
         } else {
             throw new Exception("Aucun fichier téléchargé ou erreur de téléchargement.");
@@ -56,7 +64,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $import_results = $results;
 
         // Log admin action
-        $description = "Import de résultats dans {$table_choice}: {$results['imported']} nouveaux, {$results['updated']} mis à jour, {$results['skipped']} ignorés sur {$results['total']} total";
+        $session_info = $table_choice === 'notes_print' ? " - Session: $session_choice" : "";
+        $description = "Import de résultats dans {$table_choice}{$session_info}: {$results['imported']} nouveaux, {$results['updated']} mis à jour, {$results['skipped']} ignorés sur {$results['total']} total";
         $ip = $_SERVER['REMOTE_ADDR'] ?? 'unknown';
         $log_sql = "INSERT INTO admin_logs (admin_id, action, description, ip_address) VALUES (?, 'IMPORT_RESULTS', ?, ?)";
         $log_stmt = $conn->prepare($log_sql);
@@ -78,9 +87,6 @@ function processJsonImport($conn, $json_data, $table) {
     if (!$data) {
         throw new Exception("Format JSON invalide: " . json_last_error_msg());
     }
-
-    // Expected JSON structure for notes:
-    // [{"apoL_a01_code": "12345", "code_module": "MOD001", "nom_module": "Module Name", "note": "15.5", "validite": "V"}]
 
     if (!is_array($data)) {
         throw new Exception("Le JSON doit contenir un tableau de résultats.");
@@ -163,10 +169,8 @@ function processJsonImport($conn, $json_data, $table) {
     ];
 }
 
-function processOdsImport($conn, $file_path, $table) {
+function processOdsImport($conn, $file_path, $table, $session) {
     // Parse ODS file using PHP's built-in ZIP functionality
-    // ODS files are essentially ZIP archives containing XML files
-
     $zip = new ZipArchive();
     if ($zip->open($file_path) !== TRUE) {
         throw new Exception("Impossible d'ouvrir le fichier ODS. Fichier corrompu?");
@@ -244,7 +248,7 @@ function processOdsImport($conn, $file_path, $table) {
         throw new Exception("Aucune donnée valide trouvée dans le fichier ODS.");
     }
 
-    // Process the data similar to JSON import
+    // Process the data
     $imported_count = 0;
     $updated_count = 0;
     $skipped_count = 0;
@@ -266,19 +270,19 @@ function processOdsImport($conn, $file_path, $table) {
                 continue;
             }
 
-            // Check if record already exists
-            $check_sql = "SELECT COUNT(*) FROM {$table} WHERE apoL_a01_code = ? AND nom_module = ?";
+            // Check if record already exists for this session
+            $check_sql = "SELECT COUNT(*) FROM {$table} WHERE apoL_a01_code = ? AND nom_module = ? AND session = ?";
             $check_stmt = $conn->prepare($check_sql);
-            $check_stmt->bind_param('ss', $apogee, $nom_module);
+            $check_stmt->bind_param('sss', $apogee, $nom_module, $session);
             $check_stmt->execute();
             $exists = $check_stmt->get_result()->fetch_row()[0] > 0;
             $check_stmt->close();
 
             if ($exists) {
                 // Update existing record
-                $update_sql = "UPDATE {$table} SET note = ?, code_module = ? WHERE apoL_a01_code = ? AND nom_module = ?";
+                $update_sql = "UPDATE {$table} SET note = ?, code_module = ? WHERE apoL_a01_code = ? AND nom_module = ? AND session = ?";
                 $update_stmt = $conn->prepare($update_sql);
-                $update_stmt->bind_param('ssss', $note, $code_module, $apogee, $nom_module);
+                $update_stmt->bind_param('sssss', $note, $code_module, $apogee, $nom_module, $session);
 
                 if ($update_stmt->execute()) {
                     $updated_count++;
@@ -287,10 +291,10 @@ function processOdsImport($conn, $file_path, $table) {
                 }
                 $update_stmt->close();
             } else {
-                // Insert new record
-                $insert_sql = "INSERT INTO {$table} (apoL_a01_code, code_module, nom_module, note) VALUES (?, ?, ?, ?)";
+                // Insert new record with session
+                $insert_sql = "INSERT INTO {$table} (apoL_a01_code, code_module, nom_module, note, session) VALUES (?, ?, ?, ?, ?)";
                 $insert_stmt = $conn->prepare($insert_sql);
-                $insert_stmt->bind_param('ssss', $apogee, $code_module, $nom_module, $note);
+                $insert_stmt->bind_param('sssss', $apogee, $code_module, $nom_module, $note, $session);
 
                 if ($insert_stmt->execute()) {
                     $imported_count++;
@@ -379,17 +383,30 @@ include 'admin_header.php';
             <div class="card-body">
                 <form method="POST" enctype="multipart/form-data" id="importForm">
                     <div class="row">
-                        <div class="col-md-6">
+                        <div class="col-md-4">
                             <div class="mb-3">
                                 <label for="table_choice" class="form-label"><i>🗂️</i> Choisir la table de destination</label>
                                 <select class="form-control" id="table_choice" name="table_choice" required onchange="updateFileRequirements()">
                                     <option value="" disabled selected>Sélectionnez une table</option>
                                     <option value="notes">Notes (Session normale) - Format JSON</option>
-                                    <option value="notes_print">Notes Print (Session printemps) - Format ODS</option>
+                                    <option value="notes_print">Notes Print (Sessions Automne/Printemps) - Format ODS</option>
                                 </select>
                             </div>
                         </div>
-                        <div class="col-md-6">
+
+                        <!-- Session Choice (only for notes_print) -->
+                        <div class="col-md-4" id="session_choice_container" style="display: none;">
+                            <div class="mb-3">
+                                <label for="session_choice" class="form-label"><i>📅</i> Choisir la session</label>
+                                <select class="form-control" id="session_choice" name="session_choice">
+                                    <option value="" disabled selected>Sélectionnez une session</option>
+                                    <option value="automne">Session d'Automne</option>
+                                    <option value="printemps">Session de Printemps</option>
+                                </select>
+                            </div>
+                        </div>
+
+                        <div class="col-md-4">
                             <div class="mb-3">
                                 <label for="import_file" class="form-label"><i>📁</i> Fichier à importer</label>
                                 <input type="file" class="form-control" id="import_file" name="import_file" required>
@@ -429,13 +446,6 @@ include 'admin_header.php';
     "code_module": "MOD001",
     "nom_module": "Droit constitutionnel",
     "note": "15.5",
-    "validite": "V"
-  },
-  {
-    "apoL_a01_code": "12345679",
-    "code_module": "MOD002",
-    "nom_module": "Droit civil",
-    "note": "12.0",
     "validite": "V"
   }
 ]</code></pre>
@@ -480,10 +490,10 @@ include 'admin_header.php';
                         </tr>
                     </tbody>
                 </table>
-                <div class="alert alert-info mt-2">
+                <div class="alert alert-warning mt-2">
                     <small>
-                        <strong>Note:</strong> Le fichier ODS doit contenir les colonnes dans l'ordre exact:
-                        apoL_a01_code, code_module, nom_module, note. La première ligne doit contenir les en-têtes.
+                        <strong>Important:</strong> La session sera automatiquement assignée selon votre choix (Automne/Printemps).
+                        Les données seront stockées séparément pour chaque session.
                     </small>
                 </div>
             </div>
@@ -501,32 +511,38 @@ include 'admin_header.php';
             <div class="card-body">
                 <div class="row">
                     <?php
-                    // Get statistics for both tables
+                    // Get statistics for tables including session breakdown
                     $tables_stats = [];
-                    $tables = ['notes', 'notes_print'];
 
-                    foreach ($tables as $table) {
-                        $result = $conn->query("SELECT COUNT(*) as total FROM `$table`");
-                        $total = $result ? $result->fetch_assoc()['total'] : 0;
+                    // Notes table
+                    $result = $conn->query("SELECT COUNT(*) as total FROM `notes`");
+                    $total_notes = $result ? $result->fetch_assoc()['total'] : 0;
 
-                        $result = $conn->query("SELECT COUNT(DISTINCT apoL_a01_code) as students FROM `$table`");
-                        $students = $result ? $result->fetch_assoc()['students'] : 0;
+                    $result = $conn->query("SELECT COUNT(DISTINCT apoL_a01_code) as students FROM `notes`");
+                    $students_notes = $result ? $result->fetch_assoc()['students'] : 0;
 
-                        $tables_stats[$table] = ['total' => $total, 'students' => $students];
+                    // Notes_print by session
+                    $result = $conn->query("SELECT session, COUNT(*) as total, COUNT(DISTINCT apoL_a01_code) as students FROM `notes_print` GROUP BY session");
+                    $notes_print_sessions = [];
+                    while ($result && $row = $result->fetch_assoc()) {
+                        $notes_print_sessions[$row['session']] = [
+                            'total' => $row['total'],
+                            'students' => $row['students']
+                        ];
                     }
                     ?>
 
-                    <div class="col-md-6">
+                    <div class="col-md-4">
                         <div class="card bg-light">
                             <div class="card-body text-center">
                                 <h6 class="card-title">Table: notes</h6>
                                 <div class="row">
                                     <div class="col-6">
-                                        <h4 class="text-primary"><?= $tables_stats['notes']['total'] ?></h4>
+                                        <h4 class="text-primary"><?= $total_notes ?></h4>
                                         <small>Total notes</small>
                                     </div>
                                     <div class="col-6">
-                                        <h4 class="text-success"><?= $tables_stats['notes']['students'] ?></h4>
+                                        <h4 class="text-success"><?= $students_notes ?></h4>
                                         <small>Étudiants</small>
                                     </div>
                                 </div>
@@ -534,17 +550,35 @@ include 'admin_header.php';
                         </div>
                     </div>
 
-                    <div class="col-md-6">
+                    <div class="col-md-4">
                         <div class="card bg-light">
                             <div class="card-body text-center">
-                                <h6 class="card-title">Table: notes_print</h6>
+                                <h6 class="card-title">Notes Print - Automne</h6>
                                 <div class="row">
                                     <div class="col-6">
-                                        <h4 class="text-primary"><?= $tables_stats['notes_print']['total'] ?></h4>
+                                        <h4 class="text-primary"><?= $notes_print_sessions['automne']['total'] ?? 0 ?></h4>
                                         <small>Total notes</small>
                                     </div>
                                     <div class="col-6">
-                                        <h4 class="text-success"><?= $tables_stats['notes_print']['students'] ?></h4>
+                                        <h4 class="text-success"><?= $notes_print_sessions['automne']['students'] ?? 0 ?></h4>
+                                        <small>Étudiants</small>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="col-md-4">
+                        <div class="card bg-light">
+                            <div class="card-body text-center">
+                                <h6 class="card-title">Notes Print - Printemps</h6>
+                                <div class="row">
+                                    <div class="col-6">
+                                        <h4 class="text-primary"><?= $notes_print_sessions['printemps']['total'] ?? 0 ?></h4>
+                                        <small>Total notes</small>
+                                    </div>
+                                    <div class="col-6">
+                                        <h4 class="text-success"><?= $notes_print_sessions['printemps']['students'] ?? 0 ?></h4>
                                         <small>Étudiants</small>
                                     </div>
                                 </div>
@@ -568,19 +602,27 @@ function updateFileRequirements() {
     const tableChoice = document.getElementById('table_choice').value;
     const fileInput = document.getElementById('import_file');
     const helpText = document.getElementById('file_help');
+    const sessionContainer = document.getElementById('session_choice_container');
+    const sessionSelect = document.getElementById('session_choice');
 
     if (tableChoice === 'notes') {
         fileInput.setAttribute('accept', '.json');
         helpText.textContent = 'Formats acceptés: .json uniquement';
         helpText.className = 'form-text text-success';
+        sessionContainer.style.display = 'none';
+        sessionSelect.removeAttribute('required');
     } else if (tableChoice === 'notes_print') {
         fileInput.setAttribute('accept', '.ods');
         helpText.textContent = 'Formats acceptés: .ods uniquement';
         helpText.className = 'form-text text-success';
+        sessionContainer.style.display = 'block';
+        sessionSelect.setAttribute('required', 'required');
     } else {
         fileInput.removeAttribute('accept');
         helpText.textContent = 'Sélectionnez d\'abord une table pour voir les formats acceptés';
         helpText.className = 'form-text';
+        sessionContainer.style.display = 'none';
+        sessionSelect.removeAttribute('required');
     }
 }
 
@@ -605,7 +647,8 @@ function showFormatExamples() {
               '2. code_module (Code du module)\n' +
               '3. nom_module (Nom du module)\n' +
               '4. note (Note de l\'étudiant)\n\n' +
-              'La première ligne doit contenir les en-têtes exactes.');
+              'IMPORTANT: Choisissez la session (Automne/Printemps) avant l\'import.\n' +
+              'La session sera automatiquement assignée à tous les résultats.');
     } else {
         alert('Veuillez d\'abord sélectionner une table.');
     }
@@ -614,11 +657,18 @@ function showFormatExamples() {
 // Form validation
 document.getElementById('importForm').addEventListener('submit', function(e) {
     const tableChoice = document.getElementById('table_choice').value;
+    const sessionChoice = document.getElementById('session_choice').value;
     const fileInput = document.getElementById('import_file');
 
     if (!tableChoice) {
         e.preventDefault();
         alert('Veuillez sélectionner une table de destination.');
+        return;
+    }
+
+    if (tableChoice === 'notes_print' && !sessionChoice) {
+        e.preventDefault();
+        alert('Veuillez sélectionner une session pour notes_print.');
         return;
     }
 
