@@ -13,23 +13,73 @@ require 'db.php';
 // Get statistics
 $stats = [];
 
-// Count total students
-$result = $conn->query("SELECT COUNT(*) as total FROM apogeL_a");
-$stats['total_students'] = $result->fetch_assoc()['total'];
+// Count total students - try multiple possible table names
+$result = false;
+$tables_to_try = ['apogeL_a', 'students_base', 'students'];
 
-// Count total filières
-$result = $conn->query("SELECT COUNT(DISTINCT filliere) as total FROM administative");
-$stats['total_fillieres'] = $result->fetch_assoc()['total'];
+foreach ($tables_to_try as $table) {
+    $result = $conn->query("SELECT COUNT(*) as total FROM `$table`");
+    if ($result) {
+        break; // Found a working table
+    }
+}
 
-// Count students with results
-$result = $conn->query("SELECT COUNT(DISTINCT apogee) as total FROM rsultat");
-$stats['students_with_results'] = $result->fetch_assoc()['total'];
+if ($result) {
+    $stats['total_students'] = $result->fetch_assoc()['total'];
+} else {
+    $stats['total_students'] = 0; // Default value if no table found
+}
 
-// Get recent activities (last 10 student logins or registrations)
+// Count total filières - try multiple possible table names
+$result = false;
+$tables_to_try = ['administative', 'administrative', 'admin'];
+
+foreach ($tables_to_try as $table) {
+    $result = $conn->query("SELECT COUNT(DISTINCT filliere) as total FROM `$table`");
+    if ($result) {
+        break;
+    }
+}
+
+if ($result) {
+    $stats['total_fillieres'] = $result->fetch_assoc()['total'];
+} else {
+    $stats['total_fillieres'] = 0;
+}
+
+// Count students with results - try multiple possible table names
+$result = false;
+$tables_to_try = ['rsultat', 'resultat', 'results', 'notes'];
+
+foreach ($tables_to_try as $table) {
+    $result = $conn->query("SELECT COUNT(DISTINCT apogee) as total FROM `$table`");
+    if (!$result) {
+        // Try with different column name
+        $result = $conn->query("SELECT COUNT(DISTINCT apoL_a01_code) as total FROM `$table`");
+    }
+    if ($result) {
+        break;
+    }
+}
+
+if ($result) {
+    $stats['students_with_results'] = $result->fetch_assoc()['total'];
+} else {
+    $stats['students_with_results'] = 0;
+}
+
+// Get recent activities (last 5 student records)
 $recent_students = [];
-$result = $conn->query("SELECT apoL_a01_code, apoL_a02_nom, apoL_a03_prenom FROM apogeL_a ORDER BY apoL_a01_code DESC LIMIT 5");
-while ($row = $result->fetch_assoc()) {
-    $recent_students[] = $row;
+$tables_to_try = ['apogeL_a', 'students_base', 'students'];
+
+foreach ($tables_to_try as $table) {
+    $result = $conn->query("SELECT apoL_a01_code, apoL_a02_nom, apoL_a03_prenom FROM `$table` ORDER BY apoL_a01_code DESC LIMIT 5");
+    if ($result) {
+        while ($row = $result->fetch_assoc()) {
+            $recent_students[] = $row;
+        }
+        break;
+    }
 }
 
 $conn->close();
@@ -107,16 +157,21 @@ include 'admin_header.php';
                         </a>
                     </div>
                     <div class="col-md-3 mb-2">
+                        <a href="admin_import_students.php" class="btn btn-outline-warning btn-block w-100">
+                            <i>📥</i> Importer JSON
+                        </a>
+                    </div>
+                    <div class="col-md-2 mb-2">
                         <a href="admin_student_results.php" class="btn btn-outline-success btn-block w-100">
                             <i>📋</i> Gérer Résultats
                         </a>
                     </div>
-                    <div class="col-md-3 mb-2">
+                    <div class="col-md-2 mb-2">
                         <a href="admin_reports.php" class="btn btn-outline-info btn-block w-100">
                             <i>📈</i> Voir Rapports
                         </a>
                     </div>
-                    <div class="col-md-3 mb-2">
+                    <div class="col-md-2 mb-2">
                         <a href="admin_backup.php" class="btn btn-outline-warning btn-block w-100">
                             <i>💾</i> Sauvegarde
                         </a>

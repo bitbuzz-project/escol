@@ -10,27 +10,72 @@ $page_title = "Gestion des Étudiants";
 
 require 'db.php';
 
+// Function to find the correct student table
+function findStudentTable($conn) {
+    $possible_tables = ['apogeL_a', 'students_base', 'students', 'etudiant'];
+
+    foreach ($possible_tables as $table) {
+        $result = $conn->query("SHOW TABLES LIKE '$table'");
+        if ($result && $result->num_rows > 0) {
+            // Check if the table has the required columns
+            $columns_result = $conn->query("SHOW COLUMNS FROM `$table`");
+            $columns = [];
+            while ($row = $columns_result->fetch_assoc()) {
+                $columns[] = $row['Field'];
+            }
+
+            // Check for required columns
+            if (in_array('apoL_a01_code', $columns) &&
+                in_array('apoL_a02_nom', $columns) &&
+                in_array('apoL_a03_prenom', $columns)) {
+                return $table;
+            }
+        }
+    }
+    return null;
+}
+
+// Find the correct table
+$student_table = findStudentTable($conn);
+
+if (!$student_table) {
+    die("Error: No suitable student table found in the database. Please check your database structure.");
+}
+
 // Handle search
-$search = isset($_GET['search']) ? $_GET['search'] : '';
+$search = isset($_GET['search']) ? trim($_GET['search']) : '';
 $where_clause = '';
 $params = [];
+$param_types = '';
 
 if (!empty($search)) {
     $where_clause = "WHERE apoL_a01_code LIKE ? OR apoL_a02_nom LIKE ? OR apoL_a03_prenom LIKE ?";
     $search_param = "%$search%";
     $params = [$search_param, $search_param, $search_param];
+    $param_types = 'sss';
 }
 
 // Get students with pagination
-$page = isset($_GET['page']) ? (int)$_GET['page'] : 1;
+$page = isset($_GET['page']) ? max(1, (int)$_GET['page']) : 1;
 $limit = 15;
 $offset = ($page - 1) * $limit;
 
-$query = "SELECT * FROM apogeL_a $where_clause ORDER BY apoL_a02_nom, apoL_a03_prenom LIMIT $limit OFFSET $offset";
+// Build the query
+$query = "SELECT apoL_a01_code, apoL_a02_nom, apoL_a03_prenom, apoL_a04_naissance
+          FROM `$student_table`
+          $where_clause
+          ORDER BY apoL_a02_nom, apoL_a03_prenom
+          LIMIT $limit OFFSET $offset";
+
 $stmt = $conn->prepare($query);
 
+if (!$stmt) {
+    die("Query preparation failed: " . $conn->error . "<br>Query: " . $query);
+}
+
+// Bind parameters if we have search
 if (!empty($params)) {
-    $stmt->bind_param("sss", ...$params);
+    $stmt->bind_param($param_types, ...$params);
 }
 
 $stmt->execute();
@@ -42,11 +87,15 @@ while ($row = $result->fetch_assoc()) {
 }
 
 // Get total count for pagination
-$count_query = "SELECT COUNT(*) as total FROM apogeL_a $where_clause";
+$count_query = "SELECT COUNT(*) as total FROM `$student_table` $where_clause";
 $count_stmt = $conn->prepare($count_query);
 
+if (!$count_stmt) {
+    die("Count query preparation failed: " . $conn->error);
+}
+
 if (!empty($params)) {
-    $count_stmt->bind_param("sss", ...$params);
+    $count_stmt->bind_param($param_types, ...$params);
 }
 
 $count_stmt->execute();
@@ -68,6 +117,11 @@ include 'admin_header.php';
     </a>
 </div>
 
+<!-- Database Info -->
+<div class="alert alert-info">
+    <strong>Table utilisée:</strong> <?= htmlspecialchars($student_table) ?>
+</div>
+
 <!-- Search and Filters -->
 <div class="card border-0 shadow-sm mb-4">
     <div class="card-body">
@@ -84,6 +138,11 @@ include 'admin_header.php';
                 <button type="submit" class="btn btn-primary w-100">Rechercher</button>
             </div>
         </form>
+        <?php if (!empty($search)): ?>
+            <div class="mt-2">
+                <a href="admin_students.php" class="btn btn-outline-secondary btn-sm">Effacer la recherche</a>
+            </div>
+        <?php endif; ?>
     </div>
 </div>
 
@@ -125,7 +184,11 @@ include 'admin_header.php';
             <div class="text-center py-5">
                 <i style="font-size: 3rem; color: #6c757d;">👤</i>
                 <h5 class="mt-3 text-muted">Aucun étudiant trouvé</h5>
-                <p class="text-muted">Essayez de modifier vos critères de recherche</p>
+                <?php if (!empty($search)): ?>
+                    <p class="text-muted">Essayez de modifier vos critères de recherche</p>
+                <?php else: ?>
+                    <p class="text-muted">La base de données semble vide</p>
+                <?php endif; ?>
             </div>
         <?php else: ?>
             <div class="table-responsive">
@@ -154,18 +217,18 @@ include 'admin_header.php';
                                         </div>
                                     </div>
                                 </td>
-                                <td><?= htmlspecialchars($student['apoL_a04_naissance']) ?></td>
+                                <td><?= htmlspecialchars($student['apoL_a04_naissance'] ?? 'N/A') ?></td>
                                 <td>
                                     <div class="btn-group btn-group-sm">
-                                        <a href="admin_view_student.php?id=<?= $student['apoL_a01_code'] ?>"
+                                        <a href="admin_view_student.php?id=<?= urlencode($student['apoL_a01_code']) ?>"
                                            class="btn btn-outline-info" title="Voir détails">
                                             <i>👁️</i>
                                         </a>
-                                        <a href="admin_edit_student.php?id=<?= $student['apoL_a01_code'] ?>"
+                                        <a href="admin_edit_student.php?id=<?= urlencode($student['apoL_a01_code']) ?>"
                                            class="btn btn-outline-primary" title="Modifier">
                                             <i>✏️</i>
                                         </a>
-                                        <a href="admin_student_results.php?id=<?= $student['apoL_a01_code'] ?>"
+                                        <a href="admin_student_results.php?id=<?= urlencode($student['apoL_a01_code']) ?>"
                                            class="btn btn-outline-success" title="Résultats">
                                             <i>📊</i>
                                         </a>
@@ -190,7 +253,12 @@ include 'admin_header.php';
                 </li>
             <?php endif; ?>
 
-            <?php for ($i = 1; $i <= $total_pages; $i++): ?>
+            <?php
+            $start_page = max(1, $page - 2);
+            $end_page = min($total_pages, $page + 2);
+            ?>
+
+            <?php for ($i = $start_page; $i <= $end_page; $i++): ?>
                 <li class="page-item <?= $i == $page ? 'active' : '' ?>">
                     <a class="page-link" href="?page=<?= $i ?>&search=<?= urlencode($search) ?>"><?= $i ?></a>
                 </li>

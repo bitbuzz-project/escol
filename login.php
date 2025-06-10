@@ -18,22 +18,20 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST') {
     $birthdate_input = $_POST['birthdate'];
     $birthdate = date('d/m/Y', strtotime($birthdate_input)); // Converts to "06/04/1987"
 
-    // Query to check if apogee and birthdate match
-    $query = $conn->prepare("SELECT apoL_a01_code, apoL_a02_nom, apoL_a03_prenom FROM students_base WHERE apoL_a01_code = ? AND apoL_a04_naissance = ?");
-    if (!$query) {
-        die("Query preparation failed: " . $conn->error);
-    }
+    // Special handling for admin user
+    if ($apogee === '16005333') {
+        // For admin, create a session directly (you can set a specific birthdate check if needed)
+        // Or check against a specific birthdate for admin
+        $admin_birthdate = '06/04/1987'; // Set the admin's birthdate here
 
-    $query->bind_param('ss', $apogee, $birthdate);
-    $query->execute();
-    $result = $query->get_result();
+        if ($birthdate === $admin_birthdate) {
+            $_SESSION['student'] = [
+                'apoL_a01_code' => '16005333',
+                'apoL_a02_nom' => 'Admin',
+                'apoL_a03_prenom' => 'System'
+            ];
 
-    if ($result->num_rows > 0) {
-        $_SESSION['student'] = $result->fetch_assoc();
-
-        // Check if this is the admin user
-        if ($apogee === '16005333') {
-            // Log admin login (optional)
+            // Log admin login
             $log_query = $conn->prepare("INSERT INTO admin_logs (admin_id, action, description, ip_address) VALUES (?, 'LOGIN', 'Admin login successful', ?)");
             if ($log_query) {
                 $ip = $_SERVER['REMOTE_ADDR'] ?? 'unknown';
@@ -43,15 +41,40 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST') {
             }
 
             header("Location: admin_dashboard.php");
+            exit();
         } else {
-            header("Location: dashboard.php");
+            $error = "Invalid Admin credentials.";
         }
-        exit();
     } else {
-        $error = "Invalid Apogee or Birthdate.";
-    }
+        // Regular student login - try both tables
+        $query = null;
+        $result = null;
 
-    $query->close();
+        // First try students_base table
+        $query = $conn->prepare("SELECT apoL_a01_code, apoL_a02_nom, apoL_a03_prenom FROM students_base WHERE apoL_a01_code = ? AND apoL_a04_naissance = ?");
+        if (!$query) {
+            // If students_base doesn't exist, try apogeL_a table
+            $query = $conn->prepare("SELECT apoL_a01_code, apoL_a02_nom, apoL_a03_prenom FROM apogeL_a WHERE apoL_a01_code = ? AND apoL_a04_naissance = ?");
+        }
+
+        if (!$query) {
+            die("Query preparation failed: " . $conn->error);
+        }
+
+        $query->bind_param('ss', $apogee, $birthdate);
+        $query->execute();
+        $result = $query->get_result();
+
+        if ($result->num_rows > 0) {
+            $_SESSION['student'] = $result->fetch_assoc();
+            header("Location: dashboard.php");
+            exit();
+        } else {
+            $error = "Invalid Apogee or Birthdate.";
+        }
+
+        $query->close();
+    }
 }
 ?>
 
@@ -124,7 +147,7 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST') {
         <!-- Admin Notice -->
         <div class="admin-notice">
             🛡️ للمسؤولين: استخدم الرقم 16005333 للوصول إلى لوحة الإدارة
-            <br><small>Admin: Use code 16005333 to access admin panel</small>
+            <br><small>Admin: Use code 16005333 with birthdate 06/04/1987</small>
         </div>
 
         <?php if (isset($error)): ?>
