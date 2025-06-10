@@ -29,7 +29,7 @@ require_once 'db.php';
 // Fetch notes for the logged-in student
 // Fetch notes for the logged-in student
 $query = "
-    SELECT 
+    SELECT
         n.nom_module AS default_name,
         n.note,
         n.validite,
@@ -70,192 +70,7 @@ while ($row = $result->fetch_assoc()) {
 $stmt->close();
 
 $professors = [
-    'pr.ait laaguid', 
-    'pr.aloui', 
-    'pr.badr dahbi', 
-    'pr.belbesbes', 
-    'pr.belkadi', 
-    'pr.benbounou', 
-    'pr.benmansour', 
-    'pr.boudiab', 
-    'pr.bouhmidi', 
-    'pr.bouzekraoui', 
-    'pr.brouksy', 
-    'pr.echcharyf', 
-    'pr.el idrissi', 
-    'pr.es-sehab', 
-    'pr.karim', 
-    'pr.maatouk', 
-    'pr.majidi', 
-    'Pr.meftah', 
-    'pr.moussadek', 
-    'pr.ouakasse', 
-    'pr.oualji', 
-    'pr.qorchi', 
-    'pr.rafik', 
-    'pr.setta', 
-    'ذ,جفري', 
-    'ذ. الشداوي', 
-    'ذ. العمراني', 
-    'ذ. أوهاروش', 
-    'ذ. رحو', 
-    'ذ. عباد', 
-    'ذ. قصبي', 
-    'ذ. نعناني', 
-    'ذ.إ.الحافظي', 
-    'ذ.البوشيخي', 
-    'ذ.البوهالي', 
-    'ذ.الحجاجي', 
-    'ذ.الذهبي', 
-    'ذ.الرقاي', 
-    'ذ.السكتاني', 
-    'ذ.السيتر', 
-    'ذ.الشداوي', 
-    'ذ.الشرغاوي', 
-    'ذ.الشيكر', 
-    'ذ.الصابونجي', 
-    'ذ.الطيبي', 
-    'ذ.العاشيري', 
-    'ذ.القاسمي', 
-    'ذ.المصبحي', 
-    'ذ.المليحي', 
-    'ذ.النوحي', 
-    'ذ.بنقاسم', 
-    'ذ.بوذياب', 
-    'ذ.حسون', 
-    'ذ.حميدا', 
-    'ذ.خربوش', 
-    'ذ.خلوقي', 
-    'ذ.رحو', 
-    'ذ.شحشي', 
-    'ذ.طالب', 
-    'ذ.عباد', 
-    'ذ.عراش', 
-    'ذ.قصبي', 
-    'ذ.قيبال', 
-    'ذ.كموني', 
-    'ذ.كواعروس', 
-    'ذ.مكاوي', 
-    'ذ.ملوكي', 
-    'ذ.مهم', 
-    'ذ.نعناني', 
-    'ذ.هروال', 
-    'ذ.يونسي', 
-    'ذ.الرقاي', 
-    'ذة. افقير', 
-    'ذة. الحافضي', 
-    'ذة.ابا تراب', 
-    'ذة.افقير', 
-    'ذة.الرطيمات', 
-    'ذة.الصالحي', 
-    'ذة.العلمي', 
-    'ذة.القشتول', 
-    'ذة.بنقاسم', 
-    'ذة.سميح', 
-    'ذة.فضيل', 
-    'ذة.فلاح', 
-    'ذة.لبنى المصباحي', 
-    'ذة.منال نوحي', 
-    'ذة.نوري', 
-    'ذة.يحياوي', 
-    'ذة.الرطيمات'
-];
 
-$modules = [
-
-
-];
-
-$professors = [
-    'pr.ait laaguid', 
-    'pr.aloui', 
-    'pr.badr dahbi', 
-    'pr.belbesbes', 
-    'pr.belkadi', 
-    'pr.benbounou', 
-    'pr.benmansour', 
-    'pr.boudiab', 
-    'pr.bouhmidi', 
-    'pr.bouzekraoui', 
-    'pr.brouksy', 
-    'pr.echcharyf', 
-    'pr.el idrissi', 
-    'pr.es-sehab', 
-    'pr.karim', 
-    'pr.maatouk', 
-    'pr.majidi', 
-    'Pr.meftah', 
-    'pr.moussadek', 
-    'pr.ouakasse', 
-    'pr.oualji', 
-    'pr.qorchi', 
-    'pr.rafik', 
-    'pr.setta', 
-    'ذ,جفري', 
-    'ذ. الشداوي', 
-    'ذ. العمراني', 
-    'ذ. أوهاروش', 
-    'ذ. رحو', 
-    'ذ. عباد', 
-    'ذ. قصبي', 
-    'ذ. نعناني', 
-    'ذ.إ.الحافظي', 
-    'ذ.البوشيخي', 
-    'ذ.البوهالي', 
-    'ذ.الحجاجي', 
-    'ذ.الذهبي', 
-    'ذ.الرقاي', 
-    'ذ.السكتاني', 
-    'ذ.السيتر', 
-    'ذ.الشداوي', 
-    'ذ.الشرغاوي', 
-    'ذ.الشيكر', 
-    'ذ.الصابونجي', 
-    'ذ.الطيبي', 
-    'ذ.العاشيري', 
-    'ذ.القاسمي', 
-    'ذ.المصبحي', 
-    'ذ.المليحي', 
-    'ذ.النوحي', 
-    'ذ.بنقاسم', 
-    'ذ.بوذياب', 
-    'ذ.حسون', 
-    'ذ.حميدا', 
-    'ذ.خربوش', 
-    'ذ.خلوقي', 
-    'ذ.رحو', 
-    'ذ.شحشي', 
-    'ذ.طالب', 
-    'ذ.عباد', 
-    'ذ.عراش', 
-    'ذ.قصبي', 
-    'ذ.قيبال', 
-    'ذ.كموني', 
-    'ذ.كواعروس', 
-    'ذ.مكاوي', 
-    'ذ.ملوكي', 
-    'ذ.مهم', 
-    'ذ.نعناني', 
-    'ذ.هروال', 
-    'ذ.يونسي', 
-    'ذ.الرقاي', 
-    'ذة. افقير', 
-    'ذة. الحافضي', 
-    'ذة.ابا تراب', 
-    'ذة.افقير', 
-    'ذة.الرطيمات', 
-    'ذة.الصالحي', 
-    'ذة.العلمي', 
-    'ذة.القشتول', 
-    'ذة.بنقاسم', 
-    'ذة.سميح', 
-    'ذة.فضيل', 
-    'ذة.فلاح', 
-    'ذة.لبنى المصباحي', 
-    'ذة.منال نوحي', 
-    'ذة.نوري', 
-    'ذة.يحياوي', 
-    'ذة.الرطيمات'
 ];
 
 ?>
@@ -393,7 +208,7 @@ $professors = [
                     <th>Nom du Module</th>
                     <th>Note</th>
                     <th>Validité</th>
-                   
+
                 </tr>
             </thead>
             <tbody>
@@ -408,10 +223,10 @@ $professors = [
             <td><?= htmlspecialchars($note['arabic_name'] ?? $note['default_name']) ?></td>
             <td><?= htmlspecialchars($note['note']) ?></td>
             <td><?= htmlspecialchars($note['validite']) ?></td>
-           
+
         </tr>
-        
-        
+
+
             </div>
         </div>
     <?php endforeach; ?>
@@ -427,7 +242,7 @@ $professors = [
     <div class="col-12">
         <div class="card bg-light border-secondary">
             <div class="card-body">
-                
+
         <div class="modal fade" id="reclamationModal" tabindex="-1" aria-labelledby="reclamationModalLabel" aria-hidden="true">
     <div class="modal-dialog">
         <div class="modal-content">
@@ -489,23 +304,23 @@ $professors = [
                         <select name="class" class="form-select" required>
                             <option value="" disabled selected>اختر مدرج الامتحان</option>
                             <?php
-                            $groups = ['Amphi 2', 
-            'Amphi 3', 
-            'Amphi 4', 
-            'Amphi 5', 
-            'Amphi 6', 
-            'Amphi 7', 
-            'Amphi 8', 
-            'Amphi 9', 
-            'Amphi 10', 
-            'Amphi 11', 
-            'Amphi 12', 
-            'Amphi 13', 
-            'Amphi 14', 
-            'Amphi 15', 
-            'Amphi 16', 
-            'Amphi 17', 
-            'Amphi 18', 
+                            $groups = ['Amphi 2',
+            'Amphi 3',
+            'Amphi 4',
+            'Amphi 5',
+            'Amphi 6',
+            'Amphi 7',
+            'Amphi 8',
+            'Amphi 9',
+            'Amphi 10',
+            'Amphi 11',
+            'Amphi 12',
+            'Amphi 13',
+            'Amphi 14',
+            'Amphi 15',
+            'Amphi 16',
+            'Amphi 17',
+            'Amphi 18',
             'Amphi 19',
             'BIB'];
                             foreach ($groups as $group) {
@@ -529,7 +344,7 @@ $professors = [
         </div>
     </div>
 </div>
-         
+
         <div class="row mt-4">
     <div class="col-12">
         <div class="card bg-light border-secondary">
@@ -540,7 +355,7 @@ $professors = [
     </button>
 </div>
                 <h5 class="card-title text-center text-danger">Notification importante</h5>
-               
+
                 <p class="card-text text-center">
                 <strong>
                 Les réclamations concernant chaque module dont les résultats ont été annoncés sont reçues via la même plateforme dans un délai ne dépassant pas 72 heures.                </p>

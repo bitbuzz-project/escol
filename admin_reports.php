@@ -274,7 +274,9 @@ include 'admin_header.php';
             </div>
             <div class="card-body">
                 <?php if (!empty($gender_stats)): ?>
-                    <canvas id="genderChart" width="400" height="200"></canvas>
+                    <div style="height: 300px; position: relative;">
+                        <canvas id="genderChart"></canvas>
+                    </div>
                     <div class="mt-3">
                         <?php foreach ($gender_stats as $stat): ?>
                             <div class="d-flex justify-content-between align-items-center mb-2">
@@ -529,29 +531,56 @@ include 'admin_header.php';
 <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 
 <script>
-// Gender Distribution Chart
+// Fixed Gender Distribution Chart
 <?php if (!empty($gender_stats)): ?>
-const genderCtx = document.getElementById('genderChart').getContext('2d');
-new Chart(genderCtx, {
-    type: 'doughnut',
-    data: {
-        labels: [<?php echo implode(',', array_map(function($stat) {
-            return "'" . ($stat['cod_sex_etu'] == 'M' ? 'Masculin' : 'Féminin') . "'";
-        }, $gender_stats)); ?>],
-        datasets: [{
-            data: [<?php echo implode(',', array_column($gender_stats, 'count')); ?>],
-            backgroundColor: ['#007bff', '#e83e8c'],
-            borderWidth: 2
-        }]
-    },
-    options: {
-        responsive: true,
-        maintainAspectRatio: false,
-        plugins: {
-            legend: {
-                position: 'bottom'
+document.addEventListener('DOMContentLoaded', function() {
+    const genderCtx = document.getElementById('genderChart');
+
+    if (genderCtx) {
+        new Chart(genderCtx, {
+            type: 'doughnut',
+            data: {
+                labels: [<?php echo implode(',', array_map(function($stat) {
+                    return "'" . ($stat['cod_sex_etu'] == 'M' ? 'Masculin' : 'Féminin') . "'";
+                }, $gender_stats)); ?>],
+                datasets: [{
+                    data: [<?php echo implode(',', array_column($gender_stats, 'count')); ?>],
+                    backgroundColor: ['#007bff', '#e83e8c'],
+                    borderWidth: 2,
+                    borderColor: '#fff'
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: {
+                    legend: {
+                        position: 'bottom',
+                        labels: {
+                            padding: 20,
+                            usePointStyle: true
+                        }
+                    },
+                    tooltip: {
+                        callbacks: {
+                            label: function(context) {
+                                const label = context.label || '';
+                                const value = context.parsed || 0;
+                                const total = context.dataset.data.reduce((a, b) => a + b, 0);
+                                const percentage = ((value / total) * 100).toFixed(1);
+                                return `${label}: ${value} (${percentage}%)`;
+                            }
+                        }
+                    }
+                },
+                layout: {
+                    padding: {
+                        top: 10,
+                        bottom: 10
+                    }
+                }
             }
-        }
+        });
     }
 });
 <?php endif; ?>
