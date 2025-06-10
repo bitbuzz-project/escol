@@ -15,7 +15,7 @@ $stats = [];
 
 // Count total students - try multiple possible table names
 $result = false;
-$tables_to_try = ['apogeL_a', 'students_base', 'students'];
+$tables_to_try = ['students_base', 'students'];
 
 foreach ($tables_to_try as $table) {
     $result = $conn->query("SELECT COUNT(*) as total FROM `$table`");

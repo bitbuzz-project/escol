@@ -12,7 +12,7 @@ require 'db.php';
 
 // Function to find the correct student table
 function findStudentTable($conn) {
-    $possible_tables = ['apogeL_a', 'students_base', 'students', 'etudiant'];
+    $possible_tables = ['students_base', 'students', 'etudiant'];
 
     foreach ($possible_tables as $table) {
         $result = $conn->query("SHOW TABLES LIKE '$table'");
