@@ -16,9 +16,17 @@ require_once 'db.php';
 // Get selected session or default to 'automne'
 $selected_session = isset($_GET['session']) ? $_GET['session'] : 'automne';
 
+// Get selected result type or default to 'normal'
+$selected_result_type = isset($_GET['result_type']) ? $_GET['result_type'] : 'normal';
+
 // Validate session
 if (!in_array($selected_session, ['automne', 'printemps'])) {
     $selected_session = 'automne';
+}
+
+// Validate result type
+if (!in_array($selected_result_type, ['normal', 'rattrapage'])) {
+    $selected_result_type = 'normal';
 }
 
 // Display success message
@@ -41,12 +49,14 @@ if (isset($_SESSION['error_message'])) {
     unset($_SESSION['error_message']);
 }
 
-// Fetch notes for the logged-in student for selected session
+// Fetch notes for the logged-in student for selected session and result type
+// NOUVEAU CODE (corrigé)
 $query = "
     SELECT
         n.nom_module AS default_name,
         n.note,
         n.session,
+        n.result_type,
         ma.nom_module AS arabic_name,
         n.adding_date,
         EXISTS (
@@ -58,13 +68,9 @@ $query = "
         TIMESTAMPDIFF(HOUR, n.adding_date, NOW()) AS hours_since_addition
     FROM notes_print n
     LEFT JOIN mod_arabe ma ON n.code_module = ma.code_module
-    WHERE n.apoL_a01_code = ? AND n.session = ?
+    WHERE n.apoL_a01_code = ? AND n.session = ? AND n.result_type = ?
     ORDER BY n.adding_date DESC
 ";
-
-if (!isset($student['apoL_a01_code'])) {
-    die("Error: 'apoL_a01_code' is not set.");
-}
 
 // Prepare and execute the query
 $stmt = $conn->prepare($query);
@@ -72,7 +78,7 @@ if (!$stmt) {
     die("SQL Error: " . htmlspecialchars($conn->error));
 }
 
-$stmt->bind_param("ss", $student['apoL_a01_code'], $selected_session);
+$stmt->bind_param("sss", $student['apoL_a01_code'], $selected_session, $selected_result_type);
 $stmt->execute();
 $result = $stmt->get_result();
 
@@ -84,23 +90,45 @@ while ($row = $result->fetch_assoc()) {
 
 $stmt->close();
 
-// Get available sessions for this student
-$sessions_query = "SELECT DISTINCT session FROM notes_print WHERE apoL_a01_code = ? ORDER BY session";
-$sessions_stmt = $conn->prepare($sessions_query);
-$sessions_stmt->bind_param("s", $student['apoL_a01_code']);
-$sessions_stmt->execute();
-$sessions_result = $sessions_stmt->get_result();
+// Get available sessions and result types for this student
+$availability_query = "
+    SELECT DISTINCT session, result_type
+    FROM notes_print
+    WHERE apoL_a01_code = ?
+    ORDER BY session, result_type
+";
+$availability_stmt = $conn->prepare($availability_query);
+$availability_stmt->bind_param("s", $student['apoL_a01_code']);
+$availability_stmt->execute();
+$availability_result = $availability_stmt->get_result();
 
+$available_combinations = [];
 $available_sessions = [];
-while ($row = $sessions_result->fetch_assoc()) {
-    $available_sessions[] = $row['session'];
+$available_result_types = [];
+
+while ($row = $availability_result->fetch_assoc()) {
+    $available_combinations[] = $row;
+    if (!in_array($row['session'], $available_sessions)) {
+        $available_sessions[] = $row['session'];
+    }
+    if (!in_array($row['result_type'], $available_result_types)) {
+        $available_result_types[] = $row['result_type'];
+    }
 }
-$sessions_stmt->close();
+$availability_stmt->close();
+
+// Get result types available for current session
+$current_session_result_types = [];
+foreach ($available_combinations as $combo) {
+    if ($combo['session'] === $selected_session) {
+        $current_session_result_types[] = $combo['result_type'];
+    }
+}
 
 // Get unique modules for reclamation dropdown
-$modules_query = "SELECT DISTINCT nom_module FROM notes_print WHERE apoL_a01_code = ? AND session = ? ORDER BY nom_module";
+$modules_query = "SELECT DISTINCT nom_module FROM notes_print WHERE apoL_a01_code = ? AND session = ? AND result_type = ? ORDER BY nom_module";
 $modules_stmt = $conn->prepare($modules_query);
-$modules_stmt->bind_param("ss", $student['apoL_a01_code'], $selected_session);
+$modules_stmt->bind_param("sss", $student['apoL_a01_code'], $selected_session, $selected_result_type);
 $modules_stmt->execute();
 $modules_result = $modules_stmt->get_result();
 
@@ -232,7 +260,14 @@ $conn->close();
             padding: 1.5rem;
             margin-bottom: 2rem;
         }
-        .session-btn {
+        .result-type-selector {
+            background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
+            color: white;
+            border-radius: 12px;
+            padding: 1.5rem;
+            margin-bottom: 2rem;
+        }
+        .session-btn, .result-type-btn {
             margin: 0.25rem;
             border-radius: 20px;
             padding: 0.5rem 1.5rem;
@@ -241,16 +276,20 @@ $conn->close();
             color: white;
             text-decoration: none;
             transition: all 0.3s ease;
+            display: inline-block;
         }
-        .session-btn:hover {
+        .session-btn:hover, .result-type-btn:hover {
             background: rgba(255,255,255,0.2);
             color: white;
             transform: translateY(-2px);
         }
-        .session-btn.active {
+        .session-btn.active, .result-type-btn.active {
             background: rgba(255,255,255,0.9);
             color: #667eea;
             font-weight: bold;
+        }
+        .result-type-btn.active {
+            color: #f5576c;
         }
     </style>
 </head>
@@ -322,13 +361,13 @@ $conn->close();
 
                 <div class="d-flex justify-content-center flex-wrap">
                     <?php if (in_array('automne', $available_sessions)): ?>
-                        <a href="?session=automne" class="session-btn <?= $selected_session === 'automne' ? 'active' : '' ?>">
+                        <a href="?session=automne&result_type=<?= $selected_result_type ?>" class="session-btn <?= $selected_session === 'automne' ? 'active' : '' ?>">
                             🍂 Session d'Automne
                         </a>
                     <?php endif; ?>
 
                     <?php if (in_array('printemps', $available_sessions)): ?>
-                        <a href="?session=printemps" class="session-btn <?= $selected_session === 'printemps' ? 'active' : '' ?>">
+                        <a href="?session=printemps&result_type=<?= $selected_result_type ?>" class="session-btn <?= $selected_session === 'printemps' ? 'active' : '' ?>">
                             🌸 Session de Printemps
                         </a>
                     <?php endif; ?>
@@ -342,31 +381,75 @@ $conn->close();
             </div>
         </div>
 
+        <!-- Result Type Selector -->
+        <?php if (!empty($current_session_result_types)): ?>
+        <div class="result-type-selector">
+            <div class="text-center">
+                <h4 class="mb-3">
+                    <i style="font-size: 1.5rem;">📊</i>
+                    Type de Résultat
+                </h4>
+                <p class="mb-3">Choisissez entre session normale et rattrapage</p>
+
+                <div class="d-flex justify-content-center flex-wrap">
+                    <?php if (in_array('normal', $current_session_result_types)): ?>
+                        <a href="?session=<?= $selected_session ?>&result_type=normal" class="result-type-btn <?= $selected_result_type === 'normal' ? 'active' : '' ?>">
+                            📝 Session Normale
+                        </a>
+                    <?php endif; ?>
+
+                    <?php if (in_array('rattrapage', $current_session_result_types)): ?>
+                        <a href="?session=<?= $selected_session ?>&result_type=rattrapage" class="result-type-btn <?= $selected_result_type === 'rattrapage' ? 'active' : '' ?>">
+                            🔄 Session de Rattrapage
+                        </a>
+                    <?php endif; ?>
+                </div>
+            </div>
+        </div>
+        <?php endif; ?>
+
         <!-- Results Section -->
         <div class="d-flex justify-content-between align-items-center mb-3">
             <div>
                 <h2 class="mt-4">
-                    Notes Session de <?= $selected_session === 'printemps' ? 'Printemps' : 'Automne' ?> - Normale
+                    Notes Session de <?= $selected_session === 'printemps' ? 'Printemps' : 'Automne' ?> -
+                    <?php if ($selected_result_type === 'rattrapage'): ?>
+                        <span class="badge bg-warning text-dark">Rattrapage</span>
+                    <?php else: ?>
+                        <span class="badge bg-primary">Normale</span>
+                    <?php endif; ?>
                 </h2>
                 <b>2024-2025</b>
             </div>
-            <?php if (count($available_sessions) > 1): ?>
-                <div class="dropdown">
-                    <button class="btn btn-outline-primary dropdown-toggle" type="button" data-bs-toggle="dropdown">
-                        Changer de session
-                    </button>
-                    <ul class="dropdown-menu">
-                        <?php foreach ($available_sessions as $session): ?>
-                            <li>
-                                <a class="dropdown-item <?= $session === $selected_session ? 'active' : '' ?>"
-                                   href="?session=<?= $session ?>">
-                                    <?= $session === 'printemps' ? '🌸 Printemps' : '🍂 Automne' ?>
-                                </a>
-                            </li>
-                        <?php endforeach; ?>
-                    </ul>
-                </div>
-            <?php endif; ?>
+            <div class="dropdown">
+                <button class="btn btn-outline-primary dropdown-toggle" type="button" data-bs-toggle="dropdown">
+                    Options
+                </button>
+                <ul class="dropdown-menu">
+                    <li><h6 class="dropdown-header">Sessions disponibles</h6></li>
+                    <?php foreach ($available_sessions as $session): ?>
+                        <li>
+                            <a class="dropdown-item <?= $session === $selected_session ? 'active' : '' ?>"
+                               href="?session=<?= $session ?>&result_type=<?= $selected_result_type ?>">
+                                <?= $session === 'printemps' ? '🌸 Printemps' : '🍂 Automne' ?>
+                            </a>
+                        </li>
+                    <?php endforeach; ?>
+
+                    <?php if (!empty($current_session_result_types) && count($current_session_result_types) > 1): ?>
+                    <li><hr class="dropdown-divider"></li>
+                    <li><h6 class="dropdown-header">Types de résultat</h6></li>
+                    <?php foreach ($current_session_result_types as $type): ?>
+                        <li>
+                            <a class="dropdown-item <?= $type === $selected_result_type ? 'active' : '' ?>"
+                               href="?session=<?= $selected_session ?>&result_type=<?= $type ?>">
+                                <?= $type === 'rattrapage' ? '🔄 Rattrapage' : '📝 Normale' ?>
+                            </a>
+                        </li>
+                    <?php endforeach; ?>
+                    <?php endif; ?>
+                </ul>
+            </div>
         </div>
 
         <!-- Notes Table -->
@@ -375,6 +458,7 @@ $conn->close();
                 <tr>
                     <th>Nom du Module</th>
                     <th>Note</th>
+                    <th>Type</th>
                     <th>Date d'ajout</th>
                     <th>Action</th>
                 </tr>
@@ -382,11 +466,12 @@ $conn->close();
             <tbody>
                 <?php if (empty($notes)): ?>
                     <tr>
-                        <td colspan="4" class="text-center text-muted">
+                        <td colspan="5" class="text-center text-muted">
                             <div class="py-4">
                                 <i style="font-size: 3rem;">📋</i>
                                 <h5 class="mt-3">لا توجد نتائج المرجو الإعادة لاحقا</h5>
-                                <p>Aucun résultat disponible pour la session de <?= $selected_session === 'printemps' ? 'Printemps' : 'Automne' ?></p>
+                                <p>Aucun résultat disponible pour la session de <?= $selected_session === 'printemps' ? 'Printemps' : 'Automne' ?>
+                                (<?= $selected_result_type === 'rattrapage' ? 'Rattrapage' : 'Normale' ?>)</p>
                             </div>
                         </td>
                     </tr>
@@ -398,6 +483,13 @@ $conn->close();
                                 <span class="badge <?= is_numeric($note['note']) && $note['note'] >= 10 ? 'bg-success' : 'bg-danger' ?> fs-6">
                                     <?= htmlspecialchars($note['note']) ?>
                                 </span>
+                            </td>
+                            <td>
+                                <?php if ($note['result_type'] === 'rattrapage'): ?>
+                                    <span class="badge bg-warning text-dark">Rattrapage</span>
+                                <?php else: ?>
+                                    <span class="badge bg-info">Normale</span>
+                                <?php endif; ?>
                             </td>
                             <td>
                                 <small><?= htmlspecialchars(date('d/m/Y H:i', strtotime($note['adding_date']))) ?></small>
@@ -437,6 +529,7 @@ $conn->close();
                         <div class="modal-body">
                             <input type="hidden" name="apoL_a01_code" value="<?= htmlspecialchars($student['apoL_a01_code']) ?>">
                             <input type="hidden" name="session_type" value="<?= htmlspecialchars($selected_session) ?>">
+                            <input type="hidden" name="result_type" value="<?= htmlspecialchars($selected_result_type) ?>">
 
                             <div class="mb-3">
                                 <label for="default_name" class="form-label">اسم الوحدة</label>
@@ -509,6 +602,15 @@ $conn->close();
                                 <textarea class="form-control text-end" name="info" rows="4"></textarea>
                                 <small class="form-text text-muted">يرجى تقديم التفاصيل الدقيقة حول الشكاية لضمان معالجتها بشكل سريع.</small>
                             </div>
+
+                            <!-- Display current result type context -->
+                            <div class="alert alert-info" role="alert">
+                                <small>
+                                    <strong>السياق:</strong>
+                                    الشكوى خاصة بنتائج <?= $selected_result_type === 'rattrapage' ? 'الاستدراك' : 'الدورة العادية' ?>
+                                    لدورة <?= $selected_session === 'printemps' ? 'الربيع' : 'الخريف' ?>
+                                </small>
+                            </div>
                         </div>
                         <div class="modal-footer">
                             <button type="submit" class="btn btn-success">إرسال</button>
@@ -531,6 +633,17 @@ $conn->close();
                             </button>
                         </div>
                         <?php endif; ?>
+
+                        <!-- Result Type Specific Notice -->
+                        <?php if ($selected_result_type === 'rattrapage'): ?>
+                        <div class="alert alert-warning mb-3" role="alert">
+                            <h6 class="alert-heading">⚠️ نتائج الاستدراك</h6>
+                            <p class="mb-0">
+                                هذه نتائج دورة الاستدراك. تأكد من مراجعة النتائج بعناية قبل تقديم أي شكوى.
+                            </p>
+                        </div>
+                        <?php endif; ?>
+
                         <h5 class="card-title text-center text-danger">Notification importante</h5>
                         <p class="card-text text-center">
                             <strong>
@@ -542,10 +655,76 @@ $conn->close();
                                 يتم استقبال الشكايات الخاصة بكل وحدة تم الاعلان عن نتائجها، وذلك على نفس المنصة في اجال لا يتعدى 48 ساعة
                             </strong>
                         </p>
+
+                        <!-- Additional info for rattrapage -->
+                        <?php if ($selected_result_type === 'rattrapage'): ?>
+                        <div class="alert alert-info mt-3" role="alert">
+                            <small>
+                                <strong>ملاحظة خاصة بالاستدراك:</strong>
+                                نتائج دورة الاستدراك نهائية ولا يمكن تعديلها إلا في حالات استثنائية محددة.
+                            </small>
+                        </div>
+                        <?php endif; ?>
                     </div>
                 </div>
             </div>
         </div>
+
+        <!-- Statistics Card -->
+        <?php if (!empty($notes)): ?>
+        <div class="row mt-4">
+            <div class="col-12">
+                <div class="card border-info">
+                    <div class="card-header bg-info text-white">
+                        <h6 class="mb-0">📊 إحصائيات النتائج</h6>
+                    </div>
+                    <div class="card-body">
+                        <div class="row text-center">
+                            <div class="col-md-3">
+                                <div class="border-end">
+                                    <h4 class="text-primary"><?= count($notes) ?></h4>
+                                    <small>إجمالي المواد</small>
+                                </div>
+                            </div>
+                            <div class="col-md-3">
+                                <div class="border-end">
+                                    <?php
+                                    $passed = array_filter($notes, function($note) {
+                                        return is_numeric($note['note']) && $note['note'] >= 10;
+                                    });
+                                    ?>
+                                    <h4 class="text-success"><?= count($passed) ?></h4>
+                                    <small>مواد ناجحة</small>
+                                </div>
+                            </div>
+                            <div class="col-md-3">
+                                <div class="border-end">
+                                    <?php
+                                    $failed = array_filter($notes, function($note) {
+                                        return is_numeric($note['note']) && $note['note'] < 10;
+                                    });
+                                    ?>
+                                    <h4 class="text-danger"><?= count($failed) ?></h4>
+                                    <small>مواد راسبة</small>
+                                </div>
+                            </div>
+                            <div class="col-md-3">
+                                <?php
+                                $numeric_notes = array_filter($notes, function($note) {
+                                    return is_numeric($note['note']);
+                                });
+                                $average = !empty($numeric_notes) ?
+                                    round(array_sum(array_column($numeric_notes, 'note')) / count($numeric_notes), 2) : 0;
+                                ?>
+                                <h4 class="text-info"><?= $average ?></h4>
+                                <small>المعدل</small>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        <?php endif; ?>
     </div>
 </div>
 
@@ -583,6 +762,24 @@ $conn->close();
                 }
             });
         }
+    });
+
+    // Add URL parameter tracking for better UX
+    function updateUrlParameters(session, resultType) {
+        const url = new URL(window.location);
+        url.searchParams.set('session', session);
+        url.searchParams.set('result_type', resultType);
+        window.history.pushState({}, '', url);
+    }
+
+    // Show loading state for result type changes
+    document.querySelectorAll('.result-type-btn, .session-btn').forEach(link => {
+        link.addEventListener('click', function(e) {
+            const spinner = document.createElement('div');
+            spinner.className = 'spinner-border spinner-border-sm me-2';
+            this.prepend(spinner);
+            this.style.opacity = '0.7';
+        });
     });
 </script>
 </body>

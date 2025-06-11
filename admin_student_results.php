@@ -5,38 +5,50 @@ if (!isset($_SESSION['student']) || $_SESSION['student']['apoL_a01_code'] !== '1
     exit();
 }
 
+
+
 $admin = $_SESSION['student'];
 $page_title = "Gestion des Résultats";
 
 require 'db.php';
+require 'libraries/phpspreadsheet/vendor/autoload.php'; // Adjust this path based on where you placed it
 
+use PhpOffice\PhpSpreadsheet\IOFactory;
+use PhpOffice\PhpSpreadsheet\Reader\Exception as ReaderException;
 // Process import if form is submitted
 $import_results = [];
 $errors = [];
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+
+
+    // --- END DEBUGGING LINES --
     // Increase execution time and memory for large imports
     set_time_limit(600); // 10 minutes
     ini_set('memory_limit', '512M');
 
     try {
         $table_choice = $_POST['table_choice'] ?? '';
-        $session_choice = $_POST['session_choice'] ?? ''; // New session choice
-        $file_data = '';
+        $session_choice = $_POST['session_choice'] ?? '';
+        $result_type_choice = $_POST['result_type_choice'] ?? ''; // New: Retrieve result type
 
         // Validate table choice
         if (!in_array($table_choice, ['notes', 'notes_print'])) {
             throw new Exception("Table invalide sélectionnée.");
         }
 
-        // Validate session choice for notes_print
+        // Validate session choice and result type for notes_print
         if ($table_choice === 'notes_print') {
             if (!in_array($session_choice, ['automne', 'printemps'])) {
                 throw new Exception("Session invalide sélectionnée pour notes_print.");
             }
+            // New validation for result_type
+            if (!in_array($result_type_choice, ['normal', 'rattrapage'])) {
+                throw new Exception("Type de résultat invalide sélectionné pour notes_print.");
+            }
         }
 
-        // Check if file was uploaded
+        // Check if file was uploaded and validate extension
         if (isset($_FILES['import_file']) && $_FILES['import_file']['error'] === UPLOAD_ERR_OK) {
             $file_extension = strtolower(pathinfo($_FILES['import_file']['name'], PATHINFO_EXTENSION));
 
@@ -50,12 +62,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             }
 
             if ($table_choice === 'notes' && $file_extension === 'json') {
-                // Handle JSON file for notes table
                 $file_data = file_get_contents($_FILES['import_file']['tmp_name']);
                 $results = processJsonImport($conn, $file_data, $table_choice);
             } elseif ($table_choice === 'notes_print' && $file_extension === 'ods') {
-                // Handle ODS file for notes_print table
-                $results = processOdsImport($conn, $_FILES['import_file']['tmp_name'], $table_choice, $session_choice);
+                // Pass the new $result_type_choice to processOdsImport
+                $results = processOdsImportXmlDirect($conn, $_FILES['import_file']['tmp_name'], $table_choice, $session_choice, $result_type_choice);
+
             }
         } else {
             throw new Exception("Aucun fichier téléchargé ou erreur de téléchargement.");
@@ -63,8 +75,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
         $import_results = $results;
 
-        // Log admin action
-        $session_info = $table_choice === 'notes_print' ? " - Session: $session_choice" : "";
+        // Log admin action - update description to include result_type
+        $session_info = ($table_choice === 'notes_print' ? " - Session: $session_choice, Type: $result_type_choice" : ""); // Modified
         $description = "Import de résultats dans {$table_choice}{$session_info}: {$results['imported']} nouveaux, {$results['updated']} mis à jour, {$results['skipped']} ignorés sur {$results['total']} total";
         $ip = $_SERVER['REMOTE_ADDR'] ?? 'unknown';
         $log_sql = "INSERT INTO admin_logs (admin_id, action, description, ip_address) VALUES (?, 'IMPORT_RESULTS', ?, ?)";
@@ -80,8 +92,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $import_results['success'] = false;
     }
 }
-
-function processJsonImport($conn, $json_data, $table) {
+function processJsonImportOptimized($conn, $json_data, $table) {
     $data = json_decode($json_data, true);
 
     if (!$data) {
@@ -100,6 +111,19 @@ function processJsonImport($conn, $json_data, $table) {
     // Start transaction
     $conn->autocommit(FALSE);
 
+    // Progress indicator
+    echo "<div class='progress-container' style='position: fixed; top: 20px; right: 20px; z-index: 1000; background: white; padding: 15px; border-radius: 8px; box-shadow: 0 4px 8px rgba(0,0,0,0.2);'>";
+    echo "<div>Traitement JSON en cours...</div>";
+    echo "<div class='progress' style='width: 300px; height: 20px; background: #f0f0f0; border-radius: 10px; overflow: hidden;'>";
+    echo "<div class='progress-bar' id='progressBar' style='height: 100%; background: #28a745; width: 0%; transition: width 0.3s;'></div>";
+    echo "</div>";
+    echo "<div id='progressText'>0 / {$total_count} enregistrements traités</div>";
+    echo "</div>";
+
+    if (ob_get_level()) ob_flush();
+    flush();
+
+    $batch_size = 50;
     foreach ($data as $index => $record) {
         try {
             // Validate required fields
@@ -150,15 +174,43 @@ function processJsonImport($conn, $json_data, $table) {
                 $insert_stmt->close();
             }
 
+            // Update progress
+            if (($index + 1) % $batch_size === 0) {
+                $conn->commit();
+                $conn->autocommit(FALSE);
+
+                $progress = round((($index + 1) / $total_count) * 100);
+                echo "<script>
+                    if (document.getElementById('progressBar')) {
+                        document.getElementById('progressBar').style.width = '{$progress}%';
+                        document.getElementById('progressText').textContent = '" . ($index + 1) . " / {$total_count} enregistrements traités';
+                    }
+                </script>";
+
+                if (ob_get_level()) ob_flush();
+                flush();
+                set_time_limit(300); // Reset execution time
+            }
+
         } catch (Exception $e) {
             $skipped_count++;
             // Continue processing other records
         }
     }
 
-    // Commit transaction
+    // Final commit
     $conn->commit();
     $conn->autocommit(TRUE);
+
+    echo "<script>
+        if (document.getElementById('progressBar')) {
+            document.getElementById('progressBar').style.width = '100%';
+            document.getElementById('progressText').textContent = 'Terminé! {$total_count} enregistrements traités';
+            setTimeout(function() {
+                document.querySelector('.progress-container').style.display = 'none';
+            }, 3000);
+        }
+    </script>";
 
     return [
         'success' => true,
@@ -169,14 +221,470 @@ function processJsonImport($conn, $json_data, $table) {
     ];
 }
 
-function processOdsImport($conn, $file_path, $table, $session) {
-    // Parse ODS file using PHP's built-in ZIP functionality
+function processOdsImportXmlDirect($conn, $file_path, $table, $session, $result_type) {
+    $imported_count = 0;
+    $updated_count = 0;
+    $skipped_count = 0;
+    $total_count = 0;
+    $processed_rows = 0;
+
+    if (!extension_loaded('zip')) {
+        throw new Exception("L'extension ZIP n'est pas installée.");
+    }
+
+    try {
+        // Ouvrir le fichier ODS comme un ZIP
+        $zip = new ZipArchive();
+        if ($zip->open($file_path) !== TRUE) {
+            throw new Exception("Impossible d'ouvrir le fichier ODS.");
+        }
+
+        $content_xml = $zip->getFromName('content.xml');
+        $zip->close();
+
+        if ($content_xml === FALSE) {
+            throw new Exception("Impossible de lire le contenu du fichier ODS.");
+        }
+
+        // Interface de progression améliorée
+        echo "<div class='progress-container' style='position: fixed; top: 20px; right: 20px; z-index: 1000; background: white; padding: 15px; border-radius: 8px; box-shadow: 0 4px 8px rgba(0,0,0,0.2); max-width: 400px;'>";
+        echo "<div style='font-weight: bold; margin-bottom: 5px;'>🔄 Traitement ODS Direct (XML)</div>";
+        echo "<div class='progress' style='width: 350px; height: 20px; background: #f0f0f0; border-radius: 10px; overflow: hidden; margin-bottom: 5px;'>";
+        echo "<div class='progress-bar' id='progressBar' style='height: 100%; background: linear-gradient(90deg, #007bff, #0056b3); width: 0%; transition: width 0.3s;'></div>";
+        echo "</div>";
+        echo "<div id='progressText' style='font-size: 12px; line-height: 1.3;'>📊 Analyse du XML...</div>";
+        echo "<div id='progressStats' style='font-size: 11px; color: #666; margin-top: 3px;'>⏳ Initialisation...</div>";
+        echo "</div>";
+
+        echo "<style>
+        .progress-container {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            border: 1px solid #dee2e6;
+        }
+        .progress-bar {
+            animation: pulse 2s infinite;
+        }
+        @keyframes pulse {
+            0% { opacity: 1; }
+            50% { opacity: 0.8; }
+            100% { opacity: 1; }
+        }
+        </style>";
+
+        if (ob_get_level()) ob_flush();
+        flush();
+
+        // Utiliser XMLReader pour un traitement mémoire-efficace
+        $reader = new XMLReader();
+        $reader->XML($content_xml);
+
+        $headers = [];
+        $header_found = false;
+        $row_data = [];
+        $cell_index = 0;
+        $row_index = 0;
+        $total_rows_estimate = substr_count($content_xml, '<table:table-row');
+
+        // Obtenir les enregistrements existants
+        $existing_records_lookup = [];
+        $check_existing_sql = "SELECT apoL_a01_code, nom_module FROM `{$table}` WHERE session = ? AND result_type = ?";
+        $check_existing_stmt = $conn->prepare($check_existing_sql);
+        $check_existing_stmt->bind_param('ss', $session, $result_type);
+        $check_existing_stmt->execute();
+        $result = $check_existing_stmt->get_result();
+        while ($row = $result->fetch_assoc()) {
+            $existing_records_lookup[$row['apoL_a01_code'] . '_' . $row['nom_module']] = true;
+        }
+        $check_existing_stmt->close();
+
+        echo "<?xml version='1.0' encoding='UTF-8'?>";
+        echo "<init>";
+        echo "<total_rows_estimate>{$total_rows_estimate}</total_rows_estimate>";
+        echo "<existing_records>" . count($existing_records_lookup) . "</existing_records>";
+        echo "</init>";
+
+        $conn->autocommit(FALSE);
+        $batch_size = 500;
+        $records_batch = [];
+
+        // Parcourir le XML ligne par ligne
+        while ($reader->read()) {
+            switch ($reader->nodeType) {
+                case XMLReader::ELEMENT:
+                    if ($reader->localName === 'table-row') {
+                        $row_data = [];
+                        $cell_index = 0;
+                        $row_index++;
+                    } elseif ($reader->localName === 'table-cell') {
+                        // Gérer les cellules répétées
+                        $repeated = $reader->getAttribute('table:number-columns-repeated');
+                        $repeated = $repeated ? min(intval($repeated), 20) : 1;
+
+                        // Obtenir la valeur de la cellule
+                        $cell_xml = $reader->readOuterXML();
+                        $cell_value = '';
+
+                        // Extraire le texte entre les balises <text:p>
+                        if (preg_match('/<text:p[^>]*>(.*?)<\/text:p>/s', $cell_xml, $matches)) {
+                            $cell_value = trim(strip_tags($matches[1]));
+                        }
+
+                        // Ajouter les cellules répétées
+                        for ($i = 0; $i < $repeated; $i++) {
+                            if ($cell_index < 10) { // Limiter à 10 colonnes
+                                $row_data[$cell_index] = $cell_value;
+                                $cell_index++;
+                            }
+                        }
+                    }
+                    break;
+
+                case XMLReader::END_ELEMENT:
+                    if ($reader->localName === 'table-row') {
+                        // Traiter la ligne complète
+                        $has_data = !empty(array_filter($row_data, function($cell) {
+                            return !empty(trim($cell));
+                        }));
+
+                        if ($has_data) {
+                            $processed_rows++;
+
+                            if (!$header_found) {
+                                // Première ligne non-vide = en-têtes
+                                $headers = array_slice($row_data, 0, 5);
+                                $headers = array_map('trim', $headers);
+
+                                // Valider les en-têtes
+                                $expected_headers = ['apoL_a01_code', 'code_module', 'nom_module', 'note'];
+                                $missing_headers = array_diff($expected_headers, $headers);
+                                if (!empty($missing_headers)) {
+                                    throw new Exception("Colonnes manquantes: " . implode(', ', $missing_headers));
+                                }
+
+                                $header_found = true;
+
+                                echo "<?xml version='1.0' encoding='UTF-8'?>";
+                                echo "<headers_found>";
+                                echo "<headers>" . implode(',', $headers) . "</headers>";
+                                echo "</headers_found>";
+
+                                echo "<script>
+                                    document.getElementById('progressText').innerHTML = '✅ En-têtes trouvés';
+                                    document.getElementById('progressStats').innerHTML = 'Colonnes: " . implode(', ', $headers) . "';
+                                </script>";
+
+                                if (ob_get_level()) ob_flush();
+                                flush();
+                            } else {
+                                // Ligne de données
+                                $record = [];
+                                for ($i = 0; $i < min(count($headers), count($row_data)); $i++) {
+                                    $record[$headers[$i]] = trim($row_data[$i] ?? '');
+                                }
+
+                                $apogee = $record['apoL_a01_code'] ?? '';
+                                $code_module = $record['code_module'] ?? '';
+                                $nom_module = $record['nom_module'] ?? '';
+                                $note = $record['note'] ?? '';
+
+                                if (!empty($apogee) && !empty($nom_module) && !empty($note)) {
+                                    $total_count++;
+
+                                    $unique_key = $apogee . '_' . $nom_module;
+                                    $record_data = [
+                                        'apogee' => $apogee,
+                                        'code_module' => $code_module,
+                                        'nom_module' => $nom_module,
+                                        'note' => $note,
+                                        'session' => $session,
+                                        'result_type' => $result_type,
+                                        'exists' => isset($existing_records_lookup[$unique_key])
+                                    ];
+
+                                    $records_batch[] = $record_data;
+
+                                    // Traitement par lots
+                                    if (count($records_batch) >= $batch_size) {
+                                        $batch_results = processBatchRecords($conn, $table, $records_batch);
+                                        $imported_count += $batch_results['imported'];
+                                        $updated_count += $batch_results['updated'];
+                                        $skipped_count += $batch_results['skipped'];
+
+                                        echo "<?xml version='1.0' encoding='UTF-8'?>";
+                                        echo "<batch_processed>";
+                                        echo "<imported>{$batch_results['imported']}</imported>";
+                                        echo "<updated>{$batch_results['updated']}</updated>";
+                                        echo "<total_imported>{$imported_count}</total_imported>";
+                                        echo "<total_updated>{$updated_count}</total_updated>";
+                                        echo "</batch_processed>";
+
+                                        $records_batch = [];
+
+                                        if (ob_get_level()) ob_flush();
+                                        flush();
+                                    }
+                                } else {
+                                    $skipped_count++;
+                                }
+                            }
+
+                            // Mise à jour du progrès
+                            if ($processed_rows % 50 === 0) {
+                                $progress = $total_rows_estimate > 0 ? round(($processed_rows / $total_rows_estimate) * 100) : 0;
+
+                                echo "<?xml version='1.0' encoding='UTF-8'?>";
+                                echo "<progress>";
+                                echo "<percent>{$progress}</percent>";
+                                echo "<processed>{$processed_rows}</processed>";
+                                echo "<valid>{$total_count}</valid>";
+                                echo "<imported>{$imported_count}</imported>";
+                                echo "<updated>{$updated_count}</updated>";
+                                echo "<skipped>{$skipped_count}</skipped>";
+                                echo "</progress>";
+
+                                echo "<script>
+                                    if (document.getElementById('progressBar')) {
+                                        document.getElementById('progressBar').style.width = '{$progress}%';
+                                        document.getElementById('progressText').innerHTML = '📊 Lignes: {$processed_rows} | Valides: {$total_count}';
+                                        document.getElementById('progressStats').innerHTML = '📈 Importés: {$imported_count} | Mis à jour: {$updated_count} | Ignorés: {$skipped_count}';
+                                    }
+                                </script>";
+
+                                if (ob_get_level()) ob_flush();
+                                flush();
+                                set_time_limit(300);
+                            }
+                        }
+                    }
+                    break;
+            }
+
+            // Nettoyage mémoire périodique
+            if ($row_index % 1000 === 0 && $row_index > 0) {
+                if (function_exists('gc_collect_cycles')) {
+                    gc_collect_cycles();
+                }
+            }
+        }
+
+        // Traiter les enregistrements restants
+        if (!empty($records_batch)) {
+            $batch_results = processBatchRecords($conn, $table, $records_batch);
+            $imported_count += $batch_results['imported'];
+            $updated_count += $batch_results['updated'];
+            $skipped_count += $batch_results['skipped'];
+        }
+
+        $conn->commit();
+        $conn->autocommit(TRUE);
+
+        $reader->close();
+
+        // Message de fin
+        echo "<?xml version='1.0' encoding='UTF-8'?>";
+        echo "<completion>";
+        echo "<status>success</status>";
+        echo "<total>{$total_count}</total>";
+        echo "<imported>{$imported_count}</imported>";
+        echo "<updated>{$updated_count}</updated>";
+        echo "<skipped>{$skipped_count}</skipped>";
+        echo "<processed_rows>{$processed_rows}</processed_rows>";
+        echo "</completion>";
+
+        echo "<script>
+            if (document.getElementById('progressBar')) {
+                document.getElementById('progressBar').style.width = '100%';
+                document.getElementById('progressBar').style.background = '#28a745';
+                document.getElementById('progressText').innerHTML = '✅ Terminé! {$total_count} enregistrements traités';
+                document.getElementById('progressStats').innerHTML = '📈 Importés: {$imported_count} | Mis à jour: {$updated_count} | Ignorés: {$skipped_count}';
+                setTimeout(function() {
+                    const container = document.querySelector('.progress-container');
+                    if (container) {
+                        container.style.opacity = '0.8';
+                        setTimeout(() => container.style.display = 'none', 5000);
+                    }
+                }, 3000);
+            }
+        </script>";
+
+    } catch (Exception $e) {
+        $conn->rollback();
+        throw $e;
+    }
+
+    return [
+        'success' => true,
+        'total' => $total_count,
+        'imported' => $imported_count,
+        'updated' => $updated_count,
+        'skipped' => $skipped_count
+    ];
+}
+
+function processBatchRecords($conn, $table, $records_batch) {
+    $imported = 0;
+    $updated = 0;
+    $skipped = 0;
+
+    foreach ($records_batch as $record) {
+        try {
+            if ($record['exists']) {
+                // Mettre à jour
+                $update_sql = "UPDATE `{$table}` SET note = ?, code_module = ? WHERE apoL_a01_code = ? AND nom_module = ? AND session = ? AND result_type = ?";
+                $stmt = $conn->prepare($update_sql);
+                $stmt->bind_param('ssssss', $record['note'], $record['code_module'], $record['apogee'], $record['nom_module'], $record['session'], $record['result_type']);
+                if ($stmt->execute()) {
+                    $updated++;
+                } else {
+                    $skipped++;
+                }
+                $stmt->close();
+            } else {
+                // Insérer
+                $insert_sql = "INSERT INTO `{$table}` (apoL_a01_code, code_module, nom_module, note, session, result_type) VALUES (?, ?, ?, ?, ?, ?)";
+                $stmt = $conn->prepare($insert_sql);
+                $stmt->bind_param('ssssss', $record['apogee'], $record['code_module'], $record['nom_module'], $record['note'], $record['session'], $record['result_type']);
+                if ($stmt->execute()) {
+                    $imported++;
+                } else {
+                    $skipped++;
+                }
+                $stmt->close();
+            }
+        } catch (Exception $e) {
+            $skipped++;
+            error_log("Erreur traitement record: " . $e->getMessage());
+        }
+    }
+
+    return ['imported' => $imported, 'updated' => $updated, 'skipped' => $skipped];
+}
+
+function processBatch($conn, $table, $records_batch) {
+    $imported = 0;
+    $updated = 0;
+    $skipped = 0;
+
+    foreach ($records_batch as $record) {
+        try {
+            if ($record['exists']) {
+                // Update existing record
+                $update_sql = "UPDATE `{$table}` SET note = ?, code_module = ? WHERE apoL_a01_code = ? AND nom_module = ? AND session = ? AND result_type = ?";
+                $stmt = $conn->prepare($update_sql);
+                $stmt->bind_param('ssssss', $record['note'], $record['code_module'], $record['apogee'], $record['nom_module'], $record['session'], $record['result_type']);
+                if ($stmt->execute()) {
+                    $updated++;
+                } else {
+                    $skipped++;
+                }
+                $stmt->close();
+            } else {
+                // Insert new record
+                $insert_sql = "INSERT INTO `{$table}` (apoL_a01_code, code_module, nom_module, note, session, result_type) VALUES (?, ?, ?, ?, ?, ?)";
+                $stmt = $conn->prepare($insert_sql);
+                $stmt->bind_param('ssssss', $record['apogee'], $record['code_module'], $record['nom_module'], $record['note'], $record['session'], $record['result_type']);
+                if ($stmt->execute()) {
+                    $imported++;
+                } else {
+                    $skipped++;
+                }
+                $stmt->close();
+            }
+        } catch (Exception $e) {
+            $skipped++;
+        }
+    }
+
+    return ['imported' => $imported, 'updated' => $updated, 'skipped' => $skipped];
+}
+
+/**
+ * Helper function for batch inserts
+ * @param mysqli $conn The database connection
+ * @param string $table The table name
+ * @param array $records An array of records to insert
+ * @return int Number of rows inserted
+ */
+function executeBatchInsert($conn, $table, $records) {
+    if (empty($records)) return 0;
+
+    $insertedRows = 0;
+    $insert_values_placeholders = [];
+    $insert_params = [];
+    $types = '';
+
+    foreach ($records as $record) {
+        $insert_values_placeholders[] = '(?, ?, ?, ?, ?, ?)';
+        $insert_params[] = $record['apogee'];
+        $insert_params[] = $record['code_module'];
+        $insert_params[] = $record['nom_module'];
+        $insert_params[] = $record['note'];
+        $insert_params[] = $record['session'];
+        $insert_params[] = $record['result_type'];
+        $types .= 'ssssss'; // 6 string parameters
+    }
+
+    $insert_sql = "INSERT INTO `{$table}` (apoL_a01_code, code_module, nom_module, note, session, result_type) VALUES " . implode(', ', $insert_values_placeholders);
+    $stmt = $conn->prepare($insert_sql);
+
+    if ($stmt) {
+        // Use the splat operator (...) to pass array elements as separate arguments to bind_param
+        $stmt->bind_param($types, ...$insert_params);
+        if ($stmt->execute()) {
+            $insertedRows = $stmt->affected_rows;
+        } else {
+            error_log("Batch insert failed: " . $stmt->error);
+        }
+        $stmt->close();
+    } else {
+        error_log("Failed to prepare batch insert statement: " . $conn->error);
+    }
+    return $insertedRows;
+}
+
+/**
+ * Helper function for batch updates.
+ * This function performs updates individually within the batch helper.
+ * For very large datasets and if your table has a UNIQUE index on (apoL_a01_code, nom_module, session, result_type),
+ * consider using a single `INSERT ... ON DUPLICATE KEY UPDATE` statement for better performance.
+ * @param mysqli $conn The database connection
+ * @param string $table The table name
+ * @param array $records An array of records to update
+ * @return int Number of rows updated
+ */
+function executeBatchUpdate($conn, $table, $records) {
+    if (empty($records)) return 0;
+
+    $updatedRows = 0;
+    foreach ($records as $record) {
+        $update_sql = "UPDATE `{$table}` SET note = ?, code_module = ? WHERE apoL_a01_code = ? AND nom_module = ? AND session = ? AND result_type = ?";
+        $stmt = $conn->prepare($update_sql);
+        if ($stmt) {
+            $stmt->bind_param('ssssss', $record['note'], $record['code_module'], $record['apogee'], $record['nom_module'], $record['session'], $record['result_type']);
+            if ($stmt->execute()) {
+                $updatedRows++;
+            } else {
+                error_log("Update failed for record " . $record['apogee'] . ": " . $stmt->error);
+            }
+            $stmt->close();
+        } else {
+            error_log("Failed to prepare update statement for record " . $record['apogee'] . ": " . $conn->error);
+        }
+    }
+    return $updatedRows;
+}
+
+function processOdsFileDirectly($conn, $file_path, $table, $session) {
+    // Use XMLReader for memory-efficient parsing
+    if (!extension_loaded('zip')) {
+        throw new Exception("L'extension ZIP n'est pas installée sur ce serveur.");
+    }
+
     $zip = new ZipArchive();
     if ($zip->open($file_path) !== TRUE) {
         throw new Exception("Impossible d'ouvrir le fichier ODS. Fichier corrompu?");
     }
 
-    // Extract content.xml which contains the spreadsheet data
     $content_xml = $zip->getFromName('content.xml');
     $zip->close();
 
@@ -184,7 +692,7 @@ function processOdsImport($conn, $file_path, $table, $session) {
         throw new Exception("Impossible de lire le contenu du fichier ODS.");
     }
 
-    // Parse the XML content
+    // Parse XML efficiently using SimpleXML for better performance
     $dom = new DOMDocument();
     $dom->loadXML($content_xml);
 
@@ -198,8 +706,19 @@ function processOdsImport($conn, $file_path, $table, $session) {
     $data = [];
     $headers = [];
     $row_index = 0;
+    $max_rows = 50000; // Limit to prevent memory issues
+
+    echo "<script>
+        if (document.getElementById('progressText')) {
+            document.getElementById('progressText').textContent = 'Lecture du fichier ODS...';
+        }
+    </script>";
+    if (ob_get_level()) ob_flush();
+    flush();
 
     foreach ($rows as $row) {
+        if ($row_index >= $max_rows) break;
+
         $cells = $row->getElementsByTagName('table-cell');
         $row_data = [];
 
@@ -210,7 +729,14 @@ function processOdsImport($conn, $file_path, $table, $session) {
             if ($textNodes->length > 0) {
                 $value = trim($textNodes->item(0)->nodeValue);
             }
-            $row_data[] = $value;
+
+            // Handle repeated cells
+            $repeated = $cell->getAttribute('table:number-columns-repeated');
+            $repeated = $repeated ? min(intval($repeated), 20) : 1;
+
+            for ($i = 0; $i < $repeated; $i++) {
+                $row_data[] = $value;
+            }
         }
 
         // Skip empty rows
@@ -220,46 +746,82 @@ function processOdsImport($conn, $file_path, $table, $session) {
 
         // First non-empty row is headers
         if (empty($headers)) {
-            $headers = $row_data;
+            $headers = array_slice($row_data, 0, 10);
+            $headers = array_map('trim', $headers);
+
             // Validate headers
-            $expected_headers = ['apoL_a01_code', 'code_module', 'nom_module', 'note'];
-            $missing_headers = array_diff($expected_headers, $headers);
+            $required_headers = ['apoL_a01_code', 'nom_module', 'note'];
+            $missing_headers = array_diff($required_headers, $headers);
             if (!empty($missing_headers)) {
-                throw new Exception("Colonnes manquantes dans le fichier ODS: " . implode(', ', $missing_headers));
+                throw new Exception("Colonnes manquantes: " . implode(', ', $missing_headers));
             }
-            continue;
-        }
+        } else {
+            // Map row data to headers
+            $record = [];
+            for ($i = 0; $i < min(count($headers), count($row_data)); $i++) {
+                $record[$headers[$i]] = trim($row_data[$i]);
+            }
 
-        // Map row data to headers
-        $record = [];
-        for ($i = 0; $i < count($headers) && $i < count($row_data); $i++) {
-            $record[$headers[$i]] = $row_data[$i];
-        }
-
-        // Only add records with required data
-        if (!empty($record['apoL_a01_code']) && !empty($record['nom_module'])) {
-            $data[] = $record;
+            // Only add records with required data
+            if (!empty($record['apoL_a01_code']) && !empty($record['nom_module'])) {
+                $data[] = $record;
+            }
         }
 
         $row_index++;
+
+        // Update progress every 1000 rows
+        if ($row_index % 1000 === 0) {
+            echo "<script>
+                if (document.getElementById('progressText')) {
+                    document.getElementById('progressText').textContent = 'Lecture: {$row_index} lignes traitées';
+                }
+            </script>";
+            if (ob_get_level()) ob_flush();
+            flush();
+
+            set_time_limit(300);
+        }
     }
 
     if (empty($data)) {
         throw new Exception("Aucune donnée valide trouvée dans le fichier ODS.");
     }
 
+    echo "<script>
+        if (document.getElementById('progressText')) {
+            document.getElementById('progressText').textContent = 'Insertion en base de données...';
+        }
+    </script>";
+    if (ob_get_level()) ob_flush();
+    flush();
+
     // Process the data
+    return insertDataToDatabase($conn, $data, $table, $session);
+}
+
+function insertDataToDatabase($conn, $data, $table, $session) {
     $imported_count = 0;
     $updated_count = 0;
     $skipped_count = 0;
     $total_count = count($data);
+    $batch_size = 100; // Increased batch size for better performance
 
     // Start transaction
     $conn->autocommit(FALSE);
 
+    // Prepare statements once for better performance
+    $check_sql = "SELECT COUNT(*) FROM {$table} WHERE apoL_a01_code = ? AND nom_module = ? AND session = ?";
+    $check_stmt = $conn->prepare($check_sql);
+
+    $update_sql = "UPDATE {$table} SET note = ?, code_module = ? WHERE apoL_a01_code = ? AND nom_module = ? AND session = ?";
+    $update_stmt = $conn->prepare($update_sql);
+
+    $insert_sql = "INSERT INTO {$table} (apoL_a01_code, code_module, nom_module, note, session) VALUES (?, ?, ?, ?, ?)";
+    $insert_stmt = $conn->prepare($insert_sql);
+
     foreach ($data as $index => $record) {
         try {
-            // Validate required fields
             $apogee = trim($record['apoL_a01_code'] ?? '');
             $code_module = trim($record['code_module'] ?? '');
             $nom_module = trim($record['nom_module'] ?? '');
@@ -270,49 +832,71 @@ function processOdsImport($conn, $file_path, $table, $session) {
                 continue;
             }
 
-            // Check if record already exists for this session
-            $check_sql = "SELECT COUNT(*) FROM {$table} WHERE apoL_a01_code = ? AND nom_module = ? AND session = ?";
-            $check_stmt = $conn->prepare($check_sql);
+            // Check if record exists
             $check_stmt->bind_param('sss', $apogee, $nom_module, $session);
             $check_stmt->execute();
-            $exists = $check_stmt->get_result()->fetch_row()[0] > 0;
-            $check_stmt->close();
+            $check_result = $check_stmt->get_result();
+            $exists = $check_result->fetch_row()[0] > 0;
 
             if ($exists) {
-                // Update existing record
-                $update_sql = "UPDATE {$table} SET note = ?, code_module = ? WHERE apoL_a01_code = ? AND nom_module = ? AND session = ?";
-                $update_stmt = $conn->prepare($update_sql);
                 $update_stmt->bind_param('sssss', $note, $code_module, $apogee, $nom_module, $session);
-
                 if ($update_stmt->execute()) {
                     $updated_count++;
                 } else {
                     $skipped_count++;
                 }
-                $update_stmt->close();
             } else {
-                // Insert new record with session
-                $insert_sql = "INSERT INTO {$table} (apoL_a01_code, code_module, nom_module, note, session) VALUES (?, ?, ?, ?, ?)";
-                $insert_stmt = $conn->prepare($insert_sql);
                 $insert_stmt->bind_param('sssss', $apogee, $code_module, $nom_module, $note, $session);
-
                 if ($insert_stmt->execute()) {
                     $imported_count++;
                 } else {
                     $skipped_count++;
                 }
-                $insert_stmt->close();
+            }
+
+            // Batch commit and progress update
+            if (($index + 1) % $batch_size === 0) {
+                $conn->commit();
+                $conn->autocommit(FALSE);
+
+                $progress = round((($index + 1) / $total_count) * 100);
+                echo "<script>
+                    if (document.getElementById('progressBar')) {
+                        document.getElementById('progressBar').style.width = '{$progress}%';
+                        document.getElementById('progressText').textContent = '" . ($index + 1) . " / {$total_count} étudiants traités';
+                    }
+                </script>";
+
+                if (ob_get_level()) ob_flush();
+                flush();
+
+                set_time_limit(300);
             }
 
         } catch (Exception $e) {
             $skipped_count++;
-            // Continue processing other records
+            error_log("Error processing record: " . $e->getMessage());
         }
     }
 
-    // Commit transaction
+    // Final commit
     $conn->commit();
     $conn->autocommit(TRUE);
+
+    // Close statements
+    $check_stmt->close();
+    $update_stmt->close();
+    $insert_stmt->close();
+
+    echo "<script>
+        if (document.getElementById('progressBar')) {
+            document.getElementById('progressBar').style.width = '100%';
+            document.getElementById('progressText').textContent = 'Terminé! {$total_count} étudiants traités';
+            setTimeout(function() {
+                document.querySelector('.progress-container').style.display = 'none';
+            }, 3000);
+        }
+    </script>";
 
     return [
         'success' => true,
@@ -373,6 +957,21 @@ include 'admin_header.php';
     </div>
 <?php endif; ?>
 
+<!-- File Size Warning -->
+<div class="row mb-4">
+    <div class="col-12">
+        <div class="alert alert-info">
+            <h6><i>ℹ️</i> Conseils pour l'import de gros fichiers:</h6>
+            <ul class="mb-0">
+                <li><strong>Taille maximale:</strong> 50MB par fichier</li>
+                <li><strong>Temps de traitement:</strong> Environ 1-2 minutes par 1000 enregistrements</li>
+                <li><strong>Mémoire:</strong> Le système peut traiter jusqu'à 50,000 lignes en une fois</li>
+                <li><strong>Format optimal:</strong> Supprimez les colonnes inutiles pour accélérer le traitement</li>
+            </ul>
+        </div>
+    </div>
+</div>
+
 <!-- Import Form -->
 <div class="row">
     <div class="col-12">
@@ -381,7 +980,7 @@ include 'admin_header.php';
                 <h5 class="mb-0"><i>📋</i> Importer des Résultats</h5>
             </div>
             <div class="card-body">
-                <form method="POST" enctype="multipart/form-data" id="importForm">
+                <form method="POST" action="" enctype="multipart/form-data" id="importForm">
                     <div class="row">
                         <div class="col-md-4">
                             <div class="mb-3">
@@ -395,7 +994,7 @@ include 'admin_header.php';
                         </div>
 
                         <!-- Session Choice (only for notes_print) -->
-                        <div class="col-md-4" id="session_choice_container" style="display: none;">
+<div class="col-md-4" id="session_choice_container" style="display: none;">
                             <div class="mb-3">
                                 <label for="session_choice" class="form-label"><i>📅</i> Choisir la session</label>
                                 <select class="form-control" id="session_choice" name="session_choice">
@@ -406,22 +1005,39 @@ include 'admin_header.php';
                             </div>
                         </div>
 
+                        <div class="col-md-4" id="result_type_container" style="display: none;">
+                            <div class="mb-3">
+                                <label for="result_type_choice" class="form-label"><i>⚖️</i> Type de Résultat</label>
+                                <select class="form-control" id="result_type_choice" name="result_type_choice">
+                                    <option value="" disabled selected>Sélectionnez le type</option>
+                                    <option value="normal">Session Normale</option>
+                                    <option value="rattrapage">Rattrapage</option>
+                                </select>
+                            </div>
+                        </div>
+
                         <div class="col-md-4">
                             <div class="mb-3">
                                 <label for="import_file" class="form-label"><i>📁</i> Fichier à importer</label>
                                 <input type="file" class="form-control" id="import_file" name="import_file" required>
                                 <div class="form-text" id="file_help">Sélectionnez d'abord une table pour voir les formats acceptés</div>
+                                <div class="mt-2">
+                                    <small class="text-muted">Taille max: 50MB</small>
+                                </div>
                             </div>
                         </div>
                     </div>
 
                     <div class="row mt-3">
                         <div class="col-12">
-                            <button type="submit" class="btn btn-primary btn-lg">
+                            <button type="submit" class="btn btn-primary btn-lg" id="submitBtn">
                                 <i>🚀</i> Lancer l'Import
                             </button>
                             <button type="button" class="btn btn-outline-info ms-2" onclick="showFormatExamples()">
                                 <i>📖</i> Voir les formats
+                            </button>
+                            <button type="button" class="btn btn-outline-warning ms-2" onclick="showOptimizationTips()">
+                                <i>⚡</i> Conseils d'optimisation
                             </button>
                         </div>
                     </div>
@@ -604,6 +1220,8 @@ function updateFileRequirements() {
     const helpText = document.getElementById('file_help');
     const sessionContainer = document.getElementById('session_choice_container');
     const sessionSelect = document.getElementById('session_choice');
+    const resultTypeContainer = document.getElementById('result_type_container');
+    const resultTypeSelect = document.getElementById('result_type_choice');
 
     if (tableChoice === 'notes') {
         fileInput.setAttribute('accept', '.json');
@@ -611,20 +1229,140 @@ function updateFileRequirements() {
         helpText.className = 'form-text text-success';
         sessionContainer.style.display = 'none';
         sessionSelect.removeAttribute('required');
+        resultTypeContainer.style.display = 'none';
+        resultTypeSelect.removeAttribute('required');
     } else if (tableChoice === 'notes_print') {
         fileInput.setAttribute('accept', '.ods');
         helpText.textContent = 'Formats acceptés: .ods uniquement';
         helpText.className = 'form-text text-success';
         sessionContainer.style.display = 'block';
         sessionSelect.setAttribute('required', 'required');
+        resultTypeContainer.style.display = 'block';
+        resultTypeSelect.setAttribute('required', 'required');
     } else {
         fileInput.removeAttribute('accept');
         helpText.textContent = 'Sélectionnez d\'abord une table pour voir les formats acceptés';
         helpText.className = 'form-text';
         sessionContainer.style.display = 'none';
         sessionSelect.removeAttribute('required');
+        resultTypeContainer.style.display = 'none';
+        resultTypeSelect.removeAttribute('required');
     }
 }
+
+// FIXED: Proper form submission handling
+document.addEventListener('DOMContentLoaded', function() {
+    updateFileRequirements();
+
+    const form = document.getElementById('importForm');
+    let formSubmitted = false;
+
+    form.addEventListener('submit', function(e) {
+        const tableChoice = document.getElementById('table_choice').value;
+        const sessionChoice = document.getElementById('session_choice').value;
+        const resultTypeChoice = document.getElementById('result_type_choice').value;
+        const fileInput = document.getElementById('import_file');
+        const submitBtn = document.getElementById('submitBtn');
+
+        console.log('Form validation:', {
+            tableChoice: tableChoice,
+            sessionChoice: sessionChoice,
+            resultTypeChoice: resultTypeChoice,
+            fileSelected: fileInput.files.length > 0
+        });
+
+        // Validation
+        if (!tableChoice) {
+            e.preventDefault();
+            alert('Veuillez sélectionner une table de destination.');
+            return false;
+        }
+
+        if (tableChoice === 'notes_print' && (!sessionChoice || !resultTypeChoice)) {
+            e.preventDefault();
+            alert('Veuillez sélectionner une session ET un type de résultat pour notes_print.');
+            return false;
+        }
+
+        if (!fileInput.files.length) {
+            e.preventDefault();
+            alert('Veuillez sélectionner un fichier à importer.');
+            return false;
+        }
+
+        const file = fileInput.files[0];
+        const fileName = file.name;
+        const fileExtension = fileName.split('.').pop().toLowerCase();
+        const fileSize = file.size;
+        const maxSize = 50 * 1024 * 1024; // 50MB
+
+        // Check file size
+        if (fileSize > maxSize) {
+            e.preventDefault();
+            alert('Le fichier est trop volumineux. Taille maximale autorisée: 50MB\n' +
+                  'Taille actuelle: ' + Math.round(fileSize / (1024 * 1024)) + 'MB');
+            return false;
+        }
+
+        // Check file extension
+        if (tableChoice === 'notes' && fileExtension !== 'json') {
+            e.preventDefault();
+            alert('Pour la table notes, veuillez sélectionner un fichier JSON.');
+            return false;
+        }
+
+        if (tableChoice === 'notes_print' && fileExtension !== 'ods') {
+            e.preventDefault();
+            alert('Pour la table notes_print, veuillez sélectionner un fichier ODS.');
+            return false;
+        }
+
+        // Large file warning
+        if (fileSize > 5 * 1024 * 1024) { // Files larger than 5MB
+            const confirmed = confirm(
+                'Fichier volumineux détecté (' + Math.round(fileSize / (1024 * 1024)) + 'MB)\n\n' +
+                'L\'import peut prendre plusieurs minutes.\n' +
+                'Continuer l\'import?'
+            );
+
+            if (!confirmed) {
+                e.preventDefault();
+                return false;
+            }
+        }
+
+        // Mark form as submitted to prevent beforeunload warning
+        formSubmitted = true;
+
+        // Show loading indication
+        submitBtn.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span>Import en cours...';
+        submitBtn.disabled = true;
+
+        // Show warning message
+        const warningDiv = document.createElement('div');
+        warningDiv.className = 'alert alert-warning mt-3';
+        warningDiv.innerHTML = '<strong>⚠️ Import en cours...</strong><br>' +
+                              'Ne fermez pas cette page pendant l\'import.';
+        form.parentNode.appendChild(warningDiv);
+
+        // Don't prevent default - let form submit normally
+        return true;
+    });
+
+    // FIXED: Only prevent leaving if form was not properly submitted
+    window.addEventListener('beforeunload', function(e) {
+        // Only show warning if form elements have been modified but not submitted
+        const tableChoice = document.getElementById('table_choice').value;
+        const fileInput = document.getElementById('import_file');
+
+        if (!formSubmitted && (tableChoice || fileInput.files.length > 0)) {
+            const message = 'Vous avez des modifications non sauvegardées. Êtes-vous sûr de vouloir quitter?';
+            e.preventDefault();
+            e.returnValue = message;
+            return message;
+        }
+    });
+});
 
 function showFormatExamples() {
     const tableChoice = document.getElementById('table_choice').value;
@@ -647,56 +1385,35 @@ function showFormatExamples() {
               '2. code_module (Code du module)\n' +
               '3. nom_module (Nom du module)\n' +
               '4. note (Note de l\'étudiant)\n\n' +
-              'IMPORTANT: Choisissez la session (Automne/Printemps) avant l\'import.\n' +
-              'La session sera automatiquement assignée à tous les résultats.');
+              'IMPORTANT: Choisissez la session (Automne/Printemps) avant l\'import.');
     } else {
         alert('Veuillez d\'abord sélectionner une table.');
     }
 }
 
-// Form validation
-document.getElementById('importForm').addEventListener('submit', function(e) {
-    const tableChoice = document.getElementById('table_choice').value;
-    const sessionChoice = document.getElementById('session_choice').value;
-    const fileInput = document.getElementById('import_file');
+function showOptimizationTips() {
+    alert('Conseils pour optimiser l\'import:\n\n' +
+          '1. Supprimez les colonnes inutiles\n' +
+          '2. Limitez à 50,000 lignes par fichier\n' +
+          '3. Fermez les autres applications\n' +
+          '4. Vérifiez la connexion internet');
+}
 
-    if (!tableChoice) {
-        e.preventDefault();
-        alert('Veuillez sélectionner une table de destination.');
-        return;
+// File input change handler
+document.getElementById('import_file').addEventListener('change', function() {
+    const file = this.files[0];
+    if (file) {
+        const fileSize = Math.round(file.size / (1024 * 1024) * 100) / 100;
+        const helpText = document.getElementById('file_help');
+        const originalText = helpText.textContent;
+
+        helpText.innerHTML = originalText + '<br><small class="text-info">Fichier sélectionné: ' +
+                           file.name + ' (' + fileSize + ' MB)</small>';
+
+        if (file.size > 10 * 1024 * 1024) {
+            helpText.innerHTML += '<br><small class="text-warning">⚠️ Fichier volumineux</small>';
+        }
     }
-
-    if (tableChoice === 'notes_print' && !sessionChoice) {
-        e.preventDefault();
-        alert('Veuillez sélectionner une session pour notes_print.');
-        return;
-    }
-
-    if (!fileInput.files.length) {
-        e.preventDefault();
-        alert('Veuillez sélectionner un fichier à importer.');
-        return;
-    }
-
-    const fileName = fileInput.files[0].name;
-    const fileExtension = fileName.split('.').pop().toLowerCase();
-
-    if (tableChoice === 'notes' && fileExtension !== 'json') {
-        e.preventDefault();
-        alert('Pour la table notes, veuillez sélectionner un fichier JSON.');
-        return;
-    }
-
-    if (tableChoice === 'notes_print' && fileExtension !== 'ods') {
-        e.preventDefault();
-        alert('Pour la table notes_print, veuillez sélectionner un fichier ODS.');
-        return;
-    }
-
-    // Show loading indication
-    const submitBtn = this.querySelector('button[type="submit"]');
-    submitBtn.innerHTML = '<i class="spinner-border spinner-border-sm"></i> Import en cours...';
-    submitBtn.disabled = true;
 });
 </script>
 
