@@ -15,7 +15,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $apoL_a01_code = $student['apoL_a01_code'];
         $reclamation_type = $_POST['reclamation_type'] ?? 'notes';
         $default_name = $_POST['default_name'] ?? '';
-        $category = $_POST['category'] ?? '';
+
+        // Fix: Use 'note' field from form as category for notes type
+        $category = $_POST['category'] ?? $_POST['note'] ?? '';
+
         $info = $_POST['info'] ?? '';
         $session_type = $_POST['session_type'] ?? '';
         $result_type = $_POST['result_type'] ?? '';
@@ -42,9 +45,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $class = $_POST['class'] ?? '';
                 $semestre = $_POST['semestre'] ?? '';
 
-                if (empty($default_name) || empty($category)) {
-                    throw new Exception('Module et type de problème sont requis pour une réclamation de notes.');
+                // Fix: Better validation for notes type
+                if (empty($default_name)) {
+                    throw new Exception('Le module est requis pour une réclamation de notes.');
                 }
+                if (empty($note)) {
+                    throw new Exception('Le type de problème est requis pour une réclamation de notes.');
+                }
+                // Set category to note value for consistency
+                $category = $note;
                 break;
 
             case 'correction':
@@ -98,6 +107,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $timeframe = ($reclamation_type === 'notes') ? '48 heures' : '24 heures';
             throw new Exception("Vous avez déjà soumis une réclamation similaire dans les dernières $timeframe!");
         }
+
+        // Apply business rules validation
+        validateReclamationRules($reclamation_type, $apoL_a01_code, $conn);
 
         // Insert new reclamation with enhanced data
         $query = "
@@ -221,30 +233,6 @@ function sendReclamationNotification($reclamation_id, $type, $student_code, $sub
 
     // Log notification (replace with actual email sending)
     error_log("New reclamation notification: " . json_encode($notification_data));
-
-    // Example email sending (uncomment and configure if needed):
-    /*
-    $to = 'admin@fsjs.ac.ma';
-    $email_subject = "Nouvelle réclamation #{$reclamation_id} - " . $type_labels[$type];
-    $message = "
-        Nouvelle réclamation reçue:
-
-        ID: #{$reclamation_id}
-        Type: {$type_labels[$type]}
-        Étudiant: {$student_code}
-        Objet: {$subject}
-        Date: " . date('d/m/Y H:i:s') . "
-
-        Connectez-vous à l'administration pour plus de détails.
-    ";
-
-    $headers = [
-        'From: noreply@fsjs.ac.ma',
-        'Content-Type: text/plain; charset=UTF-8'
-    ];
-
-    mail($to, $email_subject, $message, implode("\r\n", $headers));
-    */
 }
 
 /**
@@ -280,18 +268,6 @@ function validateReclamationRules($type, $student_code, $conn) {
     }
 
     return true;
-}
-
-// Apply business rules validation
-try {
-    if (isset($reclamation_type) && isset($apoL_a01_code)) {
-        validateReclamationRules($reclamation_type, $apoL_a01_code, $conn);
-    }
-} catch (Exception $e) {
-    $_SESSION['error_message'] = $e->getMessage();
-    $redirect_page = determineRedirectPage($reclamation_type ?? 'notes', $_POST);
-    header("Location: $redirect_page");
-    exit();
 }
 
 $conn->close();

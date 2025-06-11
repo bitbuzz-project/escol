@@ -526,30 +526,34 @@ $conn->close();
                         <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
                     </div>
                     <form method="POST" action="submit_reclamation.php" dir="rtl">
-                        <div class="modal-body">
-                            <input type="hidden" name="apoL_a01_code" value="<?= htmlspecialchars($student['apoL_a01_code']) ?>">
-                            <input type="hidden" name="session_type" value="<?= htmlspecialchars($selected_session) ?>">
-                            <input type="hidden" name="result_type" value="<?= htmlspecialchars($selected_result_type) ?>">
+    <div class="modal-body">
+        <input type="hidden" name="apoL_a01_code" value="<?= htmlspecialchars($student['apoL_a01_code']) ?>">
+        <input type="hidden" name="session_type" value="<?= htmlspecialchars($selected_session) ?>">
+        <input type="hidden" name="result_type" value="<?= htmlspecialchars($selected_result_type) ?>">
 
-                            <div class="mb-3">
-                                <label for="default_name" class="form-label">اسم الوحدة</label>
-                                <select name="default_name" id="moduleSelect" class="form-select" required>
-                                    <option value="" disabled selected>اختر الوحدة</option>
-                                    <?php foreach ($modules as $module): ?>
-                                        <option value="<?= htmlspecialchars($module) ?>"><?= htmlspecialchars($module) ?></option>
-                                    <?php endforeach; ?>
-                                </select>
-                            </div>
+        <!-- Add this hidden field to specify reclamation type -->
+        <input type="hidden" name="reclamation_type" value="notes">
 
-                            <div class="mb-3">
-                                <label for="note" class="form-label">نوع المشكلة</label>
-                                <select name="note" class="form-select" required>
-                                    <option value="" disabled selected>اختر نوع المشكلة</option>
-                                    <option value="zero">Zero</option>
-                                    <option value="absent">Absent</option>
-                                    <option value="other">لم اجد النتيجة</option>
-                                </select>
-                            </div>
+        <div class="mb-3">
+            <label for="default_name" class="form-label">اسم الوحدة</label>
+            <select name="default_name" id="moduleSelect" class="form-select" required>
+                <option value="" disabled selected>اختر الوحدة</option>
+                <?php foreach ($modules as $module): ?>
+                    <option value="<?= htmlspecialchars($module) ?>"><?= htmlspecialchars($module) ?></option>
+                <?php endforeach; ?>
+            </select>
+        </div>
+
+        <div class="mb-3">
+            <label for="note" class="form-label">نوع المشكلة</label>
+            <select name="note" class="form-select" required>
+                <option value="" disabled selected>اختر نوع المشكلة</option>
+                <option value="zero">Zero</option>
+                <option value="absent">Absent</option>
+                <option value="other">لم اجد النتيجة</option>
+            </select>
+        </div>
+
 
                             <div class="mb-3">
                                 <label for="prof" class="form-label">الأستاذ</label>
