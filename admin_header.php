@@ -117,6 +117,20 @@ $admin = $_SESSION['student'];
             width: 20px;
             text-align: center;
         }
+        .notification-badge {
+            background-color: #ff4757;
+            color: white;
+            border-radius: 50%;
+            padding: 2px 6px;
+            font-size: 0.7rem;
+            margin-left: 5px;
+            animation: pulse 2s infinite;
+        }
+        @keyframes pulse {
+            0% { transform: scale(1); }
+            50% { transform: scale(1.1); }
+            100% { transform: scale(1); }
+        }
     </style>
 </head>
 <body>
@@ -158,8 +172,37 @@ $admin = $_SESSION['student'];
                 <a href="admin_add_student.php" class="btn btn-link text-start">
                     <i>➕</i> Ajouter étudiant
                 </a>
+                <a href="admin_import_students.php" class="btn btn-link text-start">
+                    <i>📥</i> Importer JSON
+                </a>
                 <a href="admin_student_results.php" class="btn btn-link text-start">
                     <i>📋</i> Gérer les résultats
+                </a>
+            </div>
+
+            <div class="sidebar-section">
+                <div class="sidebar-section-title">Réclamations & Support</div>
+                <a href="admin_reclamations.php" class="btn btn-link text-start">
+                    <i>⚠️</i> Gestion des réclamations
+                    <?php
+                    // Get pending reclamations count
+                    require_once 'db.php';
+                    $pending_query = "SELECT COUNT(*) as count FROM reclamations WHERE status = 'pending'";
+                    $pending_result = $conn->query($pending_query);
+                    $pending_count = $pending_result ? $pending_result->fetch_assoc()['count'] : 0;
+                    if ($pending_count > 0):
+                    ?>
+                        <span class="notification-badge"><?= $pending_count ?></span>
+                    <?php endif; ?>
+                </a>
+                <a href="admin_reclamations.php?status=pending" class="btn btn-link text-start">
+                    <i>🔔</i> Réclamations en attente
+                </a>
+                <a href="admin_reclamations.php?type=notes" class="btn btn-link text-start">
+                    <i>📊</i> Réclamations notes
+                </a>
+                <a href="admin_reclamations.php?type=correction" class="btn btn-link text-start">
+                    <i>✏️</i> Demandes de correction
                 </a>
             </div>
 
@@ -184,6 +227,9 @@ $admin = $_SESSION['student'];
                 <a href="admin_statistics.php" class="btn btn-link text-start">
                     <i>📊</i> Statistiques
                 </a>
+                <a href="admin_reclamations_stats.php" class="btn btn-link text-start">
+                    <i>📋</i> Stats réclamations
+                </a>
             </div>
 
             <div class="sidebar-section">
@@ -193,6 +239,9 @@ $admin = $_SESSION['student'];
                 </a>
                 <a href="admin_backup.php" class="btn btn-link text-start">
                     <i>💾</i> Sauvegarde
+                </a>
+                <a href="admin_logs.php" class="btn btn-link text-start">
+                    <i>📝</i> Journaux d'activité
                 </a>
             </div>
         </div>
@@ -214,3 +263,42 @@ $admin = $_SESSION['student'];
                 <span class="navbar-brand"><?= isset($page_title) ? $page_title : 'Admin Dashboard' ?></span>
             </div>
         </nav>
+
+        <!-- Quick Notifications Bar -->
+        <?php if ($pending_count > 0): ?>
+        <div class="alert alert-warning alert-dismissible fade show mb-3" role="alert">
+            <strong>🔔 Nouvelles réclamations!</strong>
+            Vous avez <?= $pending_count ?> réclamation<?= $pending_count > 1 ? 's' : '' ?> en attente de traitement.
+            <a href="admin_reclamations.php?status=pending" class="alert-link">Voir maintenant</a>
+            <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+        </div>
+        <?php endif; ?>
+
+        <!-- Auto-refresh script for notifications -->
+        <script>
+        // Auto-refresh pending count every 30 seconds
+        setInterval(function() {
+            fetch('check_pending_reclamations.php')
+                .then(response => response.json())
+                .then(data => {
+                    const badge = document.querySelector('.notification-badge');
+                    if (data.count > 0) {
+                        if (badge) {
+                            badge.textContent = data.count;
+                        } else {
+                            // Add badge if it doesn't exist
+                            const reclamationsLink = document.querySelector('a[href="admin_reclamations.php"]');
+                            if (reclamationsLink) {
+                                const newBadge = document.createElement('span');
+                                newBadge.className = 'notification-badge';
+                                newBadge.textContent = data.count;
+                                reclamationsLink.appendChild(newBadge);
+                            }
+                        }
+                    } else if (badge) {
+                        badge.remove();
+                    }
+                })
+                .catch(error => console.log('Error checking notifications:', error));
+        }, 30000);
+        </script>

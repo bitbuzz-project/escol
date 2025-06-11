@@ -10,55 +10,289 @@ if (!isset($_SESSION['student'])) {
 $student = $_SESSION['student'];
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    // Retrieve form data
-    $apoL_a01_code = $student['apoL_a01_code'];
-    $default_name = $_POST['default_name'];
-    $note = $_POST['note'];
-    $prof = $_POST['prof'];
-    $semestre = $_POST['semestre'];
-    $class = $_POST['class'];
-    $groupe = $_POST['groupe'];
-    $info = $_POST['info'];
+    try {
+        // Retrieve form data
+        $apoL_a01_code = $student['apoL_a01_code'];
+        $reclamation_type = $_POST['reclamation_type'] ?? 'notes';
+        $default_name = $_POST['default_name'] ?? '';
+        $category = $_POST['category'] ?? '';
+        $info = $_POST['info'] ?? '';
+        $session_type = $_POST['session_type'] ?? '';
+        $result_type = $_POST['result_type'] ?? '';
 
-    // Check if the student has already made a reclamation for this module
-    $queryCheck = "SELECT COUNT(*) FROM reclamations WHERE apoL_a01_code = ? AND default_name = ?";
-    $stmtCheck = $conn->prepare($queryCheck);
-    $stmtCheck->bind_param("ss", $apoL_a01_code, $default_name);
-    $stmtCheck->execute();
-    $stmtCheck->bind_result($count);
-    $stmtCheck->fetch();
-    $stmtCheck->close();
+        // Type-specific fields
+        $note = '';
+        $prof = '';
+        $groupe = '';
+        $class = '';
+        $semestre = '';
+        $priority = $_POST['priority'] ?? 'normal';
 
-    if ($count > 0) {
-        $_SESSION['error_message'] = 'Vous avez déjà soumis une réclamation pour ce module!';
-        header("Location: resultat_ratt.php");
+        // Additional fields for correction type
+        $current_info = $_POST['current_info'] ?? '';
+        $correct_info = $_POST['correct_info'] ?? '';
+        $documents = isset($_POST['documents']) ? implode(',', $_POST['documents']) : '';
+
+        // Validate required fields based on type
+        switch ($reclamation_type) {
+            case 'notes':
+                $note = $_POST['note'] ?? $category; // Use category as note for notes type
+                $prof = $_POST['prof'] ?? '';
+                $groupe = $_POST['groupe'] ?? '';
+                $class = $_POST['class'] ?? '';
+                $semestre = $_POST['semestre'] ?? '';
+
+                if (empty($default_name) || empty($category)) {
+                    throw new Exception('Module et type de problème sont requis pour une réclamation de notes.');
+                }
+                break;
+
+            case 'correction':
+                if (empty($category) || empty($correct_info)) {
+                    throw new Exception('Type d\'erreur et information correcte sont requis pour une correction.');
+                }
+
+                // For correction type, store the correction details in info
+                $correction_details = "Type d'erreur: " . $category . "\n";
+                if (!empty($current_info)) {
+                    $correction_details .= "Information actuelle: " . $current_info . "\n";
+                }
+                $correction_details .= "Information correcte: " . $correct_info . "\n";
+                if (!empty($documents)) {
+                    $correction_details .= "Documents fournis: " . $documents . "\n";
+                }
+                $info = $correction_details . "\n" . $info;
+                $default_name = "Correction: " . $category;
+                break;
+
+            case 'autre':
+                if (empty($category) || empty($default_name)) {
+                    throw new Exception('Type de demande et objet sont requis pour ce type de réclamation.');
+                }
+                break;
+
+            default:
+                throw new Exception('Type de réclamation non valide.');
+        }
+
+        // Check if the student has already made a reclamation for this module/object recently
+        $check_interval = ($reclamation_type === 'notes') ? '48 HOUR' : '24 HOUR';
+
+        $queryCheck = "
+            SELECT COUNT(*) as count
+            FROM reclamations
+            WHERE apoL_a01_code = ?
+            AND default_name = ?
+            AND reclamation_type = ?
+            AND created_at >= DATE_SUB(NOW(), INTERVAL $check_interval)
+        ";
+
+        $stmtCheck = $conn->prepare($queryCheck);
+        $stmtCheck->bind_param("sss", $apoL_a01_code, $default_name, $reclamation_type);
+        $stmtCheck->execute();
+        $stmtCheck->bind_result($count);
+        $stmtCheck->fetch();
+        $stmtCheck->close();
+
+        if ($count > 0) {
+            $timeframe = ($reclamation_type === 'notes') ? '48 heures' : '24 heures';
+            throw new Exception("Vous avez déjà soumis une réclamation similaire dans les dernières $timeframe!");
+        }
+
+        // Insert new reclamation with enhanced data
+        $query = "
+            INSERT INTO reclamations (
+                apoL_a01_code, default_name, note, prof, groupe, class, info,
+                Semestre, reclamation_type, category, priority, session_type, result_type,
+                status, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', NOW())
+        ";
+
+        $stmt = $conn->prepare($query);
+
+        if ($stmt) {
+            $stmt->bind_param(
+                "sssssssssssss",
+                $apoL_a01_code, $default_name, $note, $prof, $groupe, $class, $info,
+                $semestre, $reclamation_type, $category, $priority, $session_type, $result_type
+            );
+
+            if ($stmt->execute()) {
+                $reclamation_id = $conn->insert_id;
+
+                // Log the reclamation creation
+                $log_query = "
+                    INSERT INTO admin_logs (admin_id, action, description, ip_address, created_at)
+                    VALUES (?, 'NEW_RECLAMATION', ?, ?, NOW())
+                ";
+                $log_stmt = $conn->prepare($log_query);
+                if ($log_stmt) {
+                    $description = "Nouvelle réclamation ID: $reclamation_id - Type: $reclamation_type - Étudiant: $apoL_a01_code";
+                    $ip = $_SERVER['REMOTE_ADDR'] ?? 'unknown';
+                    $log_stmt->bind_param('sss', $apoL_a01_code, $description, $ip);
+                    $log_stmt->execute();
+                    $log_stmt->close();
+                }
+
+                // Set success message based on type
+                $type_messages = [
+                    'notes' => 'Votre réclamation concernant les notes a été envoyée avec succès!',
+                    'correction' => 'Votre demande de correction a été envoyée avec succès!',
+                    'autre' => 'Votre demande a été envoyée avec succès!'
+                ];
+
+                $_SESSION['success_message'] = $type_messages[$reclamation_type] . " Numéro de référence: #$reclamation_id";
+
+                // Send notification email to admin (if email system is configured)
+                try {
+                    sendReclamationNotification($reclamation_id, $reclamation_type, $apoL_a01_code, $default_name);
+                } catch (Exception $e) {
+                    // Email notification failed, but reclamation was created successfully
+                    error_log("Failed to send email notification: " . $e->getMessage());
+                }
+
+            } else {
+                throw new Exception('Erreur lors de l\'enregistrement de votre réclamation.');
+            }
+            $stmt->close();
+        } else {
+            throw new Exception('Erreur de préparation de la requête.');
+        }
+
+        // Redirect based on source page
+        $redirect_page = determineRedirectPage($reclamation_type, $_POST);
+        header("Location: $redirect_page");
+        exit();
+
+    } catch (Exception $e) {
+        $_SESSION['error_message'] = $e->getMessage();
+        $redirect_page = determineRedirectPage($reclamation_type ?? 'notes', $_POST);
+        header("Location: $redirect_page");
         exit();
     }
-
-    // Insert new reclamation
-    $query = "INSERT INTO reclamations (apoL_a01_code, default_name, note, prof, groupe, class, info, Semestre)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)";
-    $stmt = $conn->prepare($query);
-    
-    if ($stmt) {
-        $stmt->bind_param("ssssssss", $apoL_a01_code, $default_name, $note, $prof, $groupe, $class, $info, $semestre);
-    
-
-        if ($stmt->execute()) {
-            $_SESSION['success_message'] = 'Réclamation envoyée avec succès!';
-        } else {
-            $_SESSION['error_message'] = 'Erreur lors de l\'envoi de votre réclamation.';
-        }
-        $stmt->close();
-    } else {
-        $_SESSION['error_message'] = 'Erreur de préparation de la requête.';
-    }
-
-    header("Location: resultat_ratt.php");
-    exit();
 } else {
     $_SESSION['error_message'] = 'Requête invalide.';
-    header("Location: resultat_ratt.php");
+    header("Location: dashboard.php");
     exit();
 }
+
+/**
+ * Determine the appropriate redirect page based on reclamation type and context
+ */
+function determineRedirectPage($type, $post_data) {
+    switch ($type) {
+        case 'notes':
+            // Check if it's from a specific results page
+            if (!empty($post_data['session_type']) && !empty($post_data['result_type'])) {
+                return "resultat.php?session=" . urlencode($post_data['session_type']) .
+                       "&result_type=" . urlencode($post_data['result_type']);
+            }
+            return "resultat.php";
+
+        case 'correction':
+        case 'autre':
+            return "profile.php";
+
+        default:
+            return "dashboard.php";
+    }
+}
+
+/**
+ * Send email notification to administrators about new reclamation
+ */
+function sendReclamationNotification($reclamation_id, $type, $student_code, $subject) {
+    // This function would integrate with your email system
+    // For now, it's a placeholder that logs the notification
+
+    $type_labels = [
+        'notes' => 'Réclamation Notes',
+        'correction' => 'Demande de Correction',
+        'autre' => 'Autre Demande'
+    ];
+
+    $notification_data = [
+        'id' => $reclamation_id,
+        'type' => $type_labels[$type] ?? $type,
+        'student' => $student_code,
+        'subject' => $subject,
+        'timestamp' => date('Y-m-d H:i:s')
+    ];
+
+    // Log notification (replace with actual email sending)
+    error_log("New reclamation notification: " . json_encode($notification_data));
+
+    // Example email sending (uncomment and configure if needed):
+    /*
+    $to = 'admin@fsjs.ac.ma';
+    $email_subject = "Nouvelle réclamation #{$reclamation_id} - " . $type_labels[$type];
+    $message = "
+        Nouvelle réclamation reçue:
+
+        ID: #{$reclamation_id}
+        Type: {$type_labels[$type]}
+        Étudiant: {$student_code}
+        Objet: {$subject}
+        Date: " . date('d/m/Y H:i:s') . "
+
+        Connectez-vous à l'administration pour plus de détails.
+    ";
+
+    $headers = [
+        'From: noreply@fsjs.ac.ma',
+        'Content-Type: text/plain; charset=UTF-8'
+    ];
+
+    mail($to, $email_subject, $message, implode("\r\n", $headers));
+    */
+}
+
+/**
+ * Validate business rules for reclamations
+ */
+function validateReclamationRules($type, $student_code, $conn) {
+    // Check daily limits
+    $daily_limits = [
+        'notes' => 3,
+        'correction' => 2,
+        'autre' => 5
+    ];
+
+    $limit = $daily_limits[$type] ?? 3;
+
+    $query = "
+        SELECT COUNT(*) as count
+        FROM reclamations
+        WHERE apoL_a01_code = ?
+        AND reclamation_type = ?
+        AND DATE(created_at) = CURDATE()
+    ";
+
+    $stmt = $conn->prepare($query);
+    $stmt->bind_param("ss", $student_code, $type);
+    $stmt->execute();
+    $stmt->bind_result($count);
+    $stmt->fetch();
+    $stmt->close();
+
+    if ($count >= $limit) {
+        throw new Exception("Limite quotidienne atteinte pour ce type de réclamation ($limit par jour).");
+    }
+
+    return true;
+}
+
+// Apply business rules validation
+try {
+    if (isset($reclamation_type) && isset($apoL_a01_code)) {
+        validateReclamationRules($reclamation_type, $apoL_a01_code, $conn);
+    }
+} catch (Exception $e) {
+    $_SESSION['error_message'] = $e->getMessage();
+    $redirect_page = determineRedirectPage($reclamation_type ?? 'notes', $_POST);
+    header("Location: $redirect_page");
+    exit();
+}
+
+$conn->close();
 ?>
