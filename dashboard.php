@@ -304,7 +304,25 @@ include 'header.php';
                         </div>
                     </div>
                 </div>
-
+                <!-- ADD THIS NEW CARD before the existing cards -->
+<div class="col-md-6 mb-3">
+    <div class="card border-0 shadow-sm hover-card h-100">
+        <div class="card-body d-flex flex-column p-4" style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; border-radius: 12px;">
+            <div class="d-flex justify-content-between align-items-start mb-3">
+                <h5 class="card-title mb-0">
+                    <i style="font-size: 1.5rem;">📊</i> Session Normale
+                </h5>
+                <span class="badge bg-light text-dark">Notes Table</span>
+            </div>
+            <p class="card-text flex-grow-1 opacity-75">
+                Consultez vos notes de la session normale (table notes)
+            </p>
+            <a href="resultat_notes.php" class="btn btn-light btn-sm">
+                <i style="font-size: 0.9rem;">👀</i> Voir les détails
+            </a>
+        </div>
+    </div>
+</div>
                 <!-- Excellence Center -->
                 <div class="col-md-12 mb-3">
                     <div class="card border-0 shadow-sm hover-card h-100">

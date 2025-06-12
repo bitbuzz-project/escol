@@ -24,8 +24,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
     // --- END DEBUGGING LINES --
     // Increase execution time and memory for large imports
-    set_time_limit(600); // 10 minutes
-    ini_set('memory_limit', '512M');
+// Increase limits for large file handling
+    ini_set('memory_limit', '1024M');          // 1GB memory
+    ini_set('max_execution_time', 1800);       // 30 minutes
+    ini_set('upload_max_filesize', '100M');    // 100MB upload
+    ini_set('post_max_size', '100M');          // 100MB POST
+    ini_set('max_input_time', 1800);
 
     try {
         $table_choice = $_POST['table_choice'] ?? '';
@@ -61,10 +65,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 throw new Exception("Pour la table 'notes_print', veuillez télécharger un fichier ODS.");
             }
 
-            if ($table_choice === 'notes' && $file_extension === 'json') {
-                $file_data = file_get_contents($_FILES['import_file']['tmp_name']);
-                $results = processJsonImport($conn, $file_data, $table_choice);
-            } elseif ($table_choice === 'notes_print' && $file_extension === 'ods') {
+
+if ($table_choice === 'notes' && $file_extension === 'json') {
+    $file_data = file_get_contents($_FILES['import_file']['tmp_name']);
+    $results = processJsonImportForApogeeFormat($conn, $file_data, $table_choice);
+} elseif ($table_choice === 'notes_print' && $file_extension === 'ods') {
                 // Pass the new $result_type_choice to processOdsImport
                 $results = processOdsImportXmlDirect($conn, $_FILES['import_file']['tmp_name'], $table_choice, $session_choice, $result_type_choice);
 
@@ -92,125 +97,155 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $import_results['success'] = false;
     }
 }
-function processJsonImportOptimized($conn, $json_data, $table) {
-    $data = json_decode($json_data, true);
-
-    if (!$data) {
-        throw new Exception("Format JSON invalide: " . json_last_error_msg());
-    }
-
-    if (!is_array($data)) {
-        throw new Exception("Le JSON doit contenir un tableau de résultats.");
-    }
+function processJsonImport($conn, $json_data, $table) {
+    // Memory-efficient JSON processing for large files
+    $temp_file = tempnam(sys_get_temp_dir(), 'json_import_');
+    file_put_contents($temp_file, $json_data);
 
     $imported_count = 0;
     $updated_count = 0;
     $skipped_count = 0;
-    $total_count = count($data);
+    $total_count = 0;
 
-    // Start transaction
-    $conn->autocommit(FALSE);
-
-    // Progress indicator
+    // Progress tracking
     echo "<div class='progress-container' style='position: fixed; top: 20px; right: 20px; z-index: 1000; background: white; padding: 15px; border-radius: 8px; box-shadow: 0 4px 8px rgba(0,0,0,0.2);'>";
-    echo "<div>Traitement JSON en cours...</div>";
-    echo "<div class='progress' style='width: 300px; height: 20px; background: #f0f0f0; border-radius: 10px; overflow: hidden;'>";
+    echo "<div style='font-weight: bold;'>🔄 Import JSON Large File</div>";
+    echo "<div class='progress' style='width: 350px; height: 20px; background: #f0f0f0; border-radius: 10px; overflow: hidden;'>";
     echo "<div class='progress-bar' id='progressBar' style='height: 100%; background: #28a745; width: 0%; transition: width 0.3s;'></div>";
     echo "</div>";
-    echo "<div id='progressText'>0 / {$total_count} enregistrements traités</div>";
+    echo "<div id='progressText'>Lecture du fichier...</div>";
     echo "</div>";
 
     if (ob_get_level()) ob_flush();
     flush();
 
-    $batch_size = 50;
-    foreach ($data as $index => $record) {
-        try {
-            // Validate required fields
-            $required_fields = ['apoL_a01_code', 'nom_module', 'note'];
-            foreach ($required_fields as $field) {
-                if (!isset($record[$field]) || empty(trim($record[$field]))) {
-                    throw new Exception("Champ requis manquant: {$field}");
+    try {
+        // Parse JSON in chunks to avoid memory issues
+        $json_content = file_get_contents($temp_file);
+        $data = json_decode($json_content, true);
+
+        if (!$data || json_last_error() !== JSON_ERROR_NONE) {
+            throw new Exception("Format JSON invalide: " . json_last_error_msg());
+        }
+
+        $total_count = count($data);
+
+        if ($total_count === 0) {
+            throw new Exception("Aucune donnée trouvée dans le fichier JSON.");
+        }
+
+        // Start transaction
+        $conn->autocommit(FALSE);
+
+        // Prepare statements once for better performance
+        $check_sql = "SELECT COUNT(*) FROM `$table` WHERE apoL_a01_code = ? AND nom_module = ?";
+        $check_stmt = $conn->prepare($check_sql);
+
+        $update_sql = "UPDATE `$table` SET note = ?, validite = ?, code_module = ? WHERE apoL_a01_code = ? AND nom_module = ?";
+        $update_stmt = $conn->prepare($update_sql);
+
+        $insert_sql = "INSERT INTO `$table` (apoL_a01_code, code_module, nom_module, note, validite) VALUES (?, ?, ?, ?, ?)";
+        $insert_stmt = $conn->prepare($insert_sql);
+
+        $batch_size = 500; // Process in batches
+        $processed = 0;
+
+        foreach ($data as $index => $record) {
+            try {
+                // Validate required fields
+                $apogee = trim($record['apoL_a01_code'] ?? '');
+                $code_module = trim($record['code_module'] ?? '');
+                $nom_module = trim($record['nom_module'] ?? '');
+                $note = trim($record['note'] ?? '');
+                $validite = trim($record['validite'] ?? '');
+
+                if (empty($apogee) || empty($nom_module) || empty($note)) {
+                    $skipped_count++;
+                    continue;
                 }
-            }
 
-            $apogee = trim($record['apoL_a01_code']);
-            $code_module = trim($record['code_module'] ?? '');
-            $nom_module = trim($record['nom_module']);
-            $note = trim($record['note']);
-            $validite = trim($record['validite'] ?? '');
+                // Check if record exists
+                $check_stmt->bind_param('ss', $apogee, $nom_module);
+                $check_stmt->execute();
+                $check_result = $check_stmt->get_result();
+                $exists = $check_result->fetch_row()[0] > 0;
 
-            // Check if record already exists
-            $check_sql = "SELECT COUNT(*) FROM {$table} WHERE apoL_a01_code = ? AND nom_module = ?";
-            $check_stmt = $conn->prepare($check_sql);
-            $check_stmt->bind_param('ss', $apogee, $nom_module);
-            $check_stmt->execute();
-            $exists = $check_stmt->get_result()->fetch_row()[0] > 0;
-            $check_stmt->close();
-
-            if ($exists) {
-                // Update existing record
-                $update_sql = "UPDATE {$table} SET note = ?, validite = ?, code_module = ? WHERE apoL_a01_code = ? AND nom_module = ?";
-                $update_stmt = $conn->prepare($update_sql);
-                $update_stmt->bind_param('sssss', $note, $validite, $code_module, $apogee, $nom_module);
-
-                if ($update_stmt->execute()) {
-                    $updated_count++;
-                } else {
-                    throw new Exception("Erreur lors de la mise à jour");
-                }
-                $update_stmt->close();
-            } else {
-                // Insert new record
-                $insert_sql = "INSERT INTO {$table} (apoL_a01_code, code_module, nom_module, note, validite) VALUES (?, ?, ?, ?, ?)";
-                $insert_stmt = $conn->prepare($insert_sql);
-                $insert_stmt->bind_param('sssss', $apogee, $code_module, $nom_module, $note, $validite);
-
-                if ($insert_stmt->execute()) {
-                    $imported_count++;
-                } else {
-                    throw new Exception("Erreur lors de l'insertion");
-                }
-                $insert_stmt->close();
-            }
-
-            // Update progress
-            if (($index + 1) % $batch_size === 0) {
-                $conn->commit();
-                $conn->autocommit(FALSE);
-
-                $progress = round((($index + 1) / $total_count) * 100);
-                echo "<script>
-                    if (document.getElementById('progressBar')) {
-                        document.getElementById('progressBar').style.width = '{$progress}%';
-                        document.getElementById('progressText').textContent = '" . ($index + 1) . " / {$total_count} enregistrements traités';
+                if ($exists) {
+                    // Update existing record
+                    $update_stmt->bind_param('sssss', $note, $validite, $code_module, $apogee, $nom_module);
+                    if ($update_stmt->execute()) {
+                        $updated_count++;
+                    } else {
+                        $skipped_count++;
                     }
-                </script>";
+                } else {
+                    // Insert new record
+                    $insert_stmt->bind_param('sssss', $apogee, $code_module, $nom_module, $note, $validite);
+                    if ($insert_stmt->execute()) {
+                        $imported_count++;
+                    } else {
+                        $skipped_count++;
+                    }
+                }
 
-                if (ob_get_level()) ob_flush();
-                flush();
-                set_time_limit(300); // Reset execution time
+                $processed++;
+
+                // Commit in batches and update progress
+                if ($processed % $batch_size === 0) {
+                    $conn->commit();
+                    $conn->autocommit(FALSE);
+
+                    $progress = round(($processed / $total_count) * 100);
+                    echo "<script>
+                        if (document.getElementById('progressBar')) {
+                            document.getElementById('progressBar').style.width = '{$progress}%';
+                            document.getElementById('progressText').textContent = 'Traité: {$processed}/{$total_count} - Importés: {$imported_count}, Mis à jour: {$updated_count}';
+                        }
+                    </script>";
+
+                    if (ob_get_level()) ob_flush();
+                    flush();
+
+                    // Reset execution time
+                    set_time_limit(1800);
+
+                    // Memory cleanup
+                    if (function_exists('gc_collect_cycles')) {
+                        gc_collect_cycles();
+                    }
+                }
+
+            } catch (Exception $e) {
+                $skipped_count++;
+                error_log("Error processing record: " . $e->getMessage());
             }
+        }
 
-        } catch (Exception $e) {
-            $skipped_count++;
-            // Continue processing other records
+        // Final commit
+        $conn->commit();
+        $conn->autocommit(TRUE);
+
+        // Close statements
+        $check_stmt->close();
+        $update_stmt->close();
+        $insert_stmt->close();
+
+        echo "<script>
+            if (document.getElementById('progressBar')) {
+                document.getElementById('progressBar').style.width = '100%';
+                document.getElementById('progressText').textContent = 'Terminé! {$total_count} enregistrements traités';
+                setTimeout(function() {
+                    document.querySelector('.progress-container').style.display = 'none';
+                }, 3000);
+            }
+        </script>";
+
+    } finally {
+        // Clean up temp file
+        if (file_exists($temp_file)) {
+            unlink($temp_file);
         }
     }
-
-    // Final commit
-    $conn->commit();
-    $conn->autocommit(TRUE);
-
-    echo "<script>
-        if (document.getElementById('progressBar')) {
-            document.getElementById('progressBar').style.width = '100%';
-            document.getElementById('progressText').textContent = 'Terminé! {$total_count} enregistrements traités';
-            setTimeout(function() {
-                document.querySelector('.progress-container').style.display = 'none';
-            }, 3000);
-        }
-    </script>";
 
     return [
         'success' => true,
@@ -219,6 +254,261 @@ function processJsonImportOptimized($conn, $json_data, $table) {
         'updated' => $updated_count,
         'skipped' => $skipped_count
     ];
+}
+
+function validateAndPreviewJson($json_data, $max_preview = 3) {
+    try {
+        // Try to clean first
+        $cleaned = cleanApogeeJsonFormat($json_data);
+        $data = json_decode($cleaned, true);
+
+        if (!$data) {
+            return [
+                'valid' => false,
+                'error' => 'JSON invalide: ' . json_last_error_msg(),
+                'preview' => null
+            ];
+        }
+
+        if (!isset($data['results'][0]['items'])) {
+            return [
+                'valid' => false,
+                'error' => 'Structure incorrecte: manque results[0].items',
+                'preview' => null
+            ];
+        }
+
+        $items = $data['results'][0]['items'];
+        $preview = array_slice($items, 0, $max_preview);
+
+        return [
+            'valid' => true,
+            'error' => null,
+            'preview' => $preview,
+            'total_count' => count($items)
+        ];
+
+    } catch (Exception $e) {
+        return [
+            'valid' => false,
+            'error' => $e->getMessage(),
+            'preview' => null
+        ];
+    }
+}
+
+function processJsonImportForApogeeFormat($conn, $json_data, $table) {
+    $imported_count = 0;
+    $updated_count = 0;
+    $skipped_count = 0;
+    $total_count = 0;
+
+    // Progress tracking
+    echo "<div class='progress-container' style='position: fixed; top: 20px; right: 20px; z-index: 1000; background: white; padding: 15px; border-radius: 8px; box-shadow: 0 4px 8px rgba(0,0,0,0.2);'>";
+    echo "<div style='font-weight: bold;'>🔄 Import JSON Apogée Format</div>";
+    echo "<div class='progress' style='width: 350px; height: 20px; background: #f0f0f0; border-radius: 10px; overflow: hidden;'>";
+    echo "<div class='progress-bar' id='progressBar' style='height: 100%; background: #28a745; width: 0%; transition: width 0.3s;'></div>";
+    echo "</div>";
+    echo "<div id='progressText'>Validation et nettoyage JSON...</div>";
+    echo "</div>";
+
+    if (ob_get_level()) ob_flush();
+    flush();
+
+    try {
+        // STEP 1: Clean and fix JSON syntax issues
+        $cleaned_json = cleanApogeeJsonFormat($json_data);
+
+        // STEP 2: Parse JSON
+        $data = json_decode($cleaned_json, true);
+
+        if (!$data || json_last_error() !== JSON_ERROR_NONE) {
+            throw new Exception("Format JSON invalide après nettoyage: " . json_last_error_msg());
+        }
+
+        // STEP 3: Extract items from the Apogée format
+        if (!isset($data['results']) || !isset($data['results'][0]['items'])) {
+            throw new Exception("Structure JSON non reconnue. Format attendu: {results: [{items: [...]}]}");
+        }
+
+        $items = $data['results'][0]['items'];
+        $total_count = count($items);
+
+        if ($total_count === 0) {
+            throw new Exception("Aucune donnée trouvée dans les items.");
+        }
+
+        echo "<script>
+            document.getElementById('progressText').textContent = 'Traitement de {$total_count} enregistrements...';
+        </script>";
+        if (ob_get_level()) ob_flush();
+        flush();
+
+        // STEP 4: Start transaction
+        $conn->autocommit(FALSE);
+
+        // Prepare statements
+        $check_sql = "SELECT COUNT(*) FROM `$table` WHERE apoL_a01_code = ? AND nom_module = ?";
+        $check_stmt = $conn->prepare($check_sql);
+
+        $update_sql = "UPDATE `$table` SET note = ?, validite = ?, code_module = ? WHERE apoL_a01_code = ? AND nom_module = ?";
+        $update_stmt = $conn->prepare($update_sql);
+
+        $insert_sql = "INSERT INTO `$table` (apoL_a01_code, code_module, nom_module, note, validite) VALUES (?, ?, ?, ?, ?)";
+        $insert_stmt = $conn->prepare($insert_sql);
+
+        $batch_size = 500;
+        $processed = 0;
+
+        // STEP 5: Process each item
+        foreach ($items as $index => $item) {
+            try {
+                // Map Apogée fields to your database fields
+                $apogee = trim(strval($item['cod_etu'] ?? ''));
+                $code_module = trim(strval($item['cod_elp'] ?? ''));
+                $nom_module = trim(strval($item['lib_elp'] ?? ''));
+                $note = trim(strval($item['not_elp'] ?? ''));
+                $validite = trim(strval($item['cod_tre'] ?? ''));
+
+                // Validate required fields
+                if (empty($apogee) || empty($nom_module)) {
+                    $skipped_count++;
+                    continue;
+                }
+
+                // Handle note formatting (ensure it's a valid number)
+                if (!empty($note) && !is_numeric($note)) {
+                    // Try to fix common issues like comma instead of dot
+                    $note = str_replace(',', '.', $note);
+                    if (!is_numeric($note)) {
+                        $note = '0'; // Default to 0 if still not numeric
+                    }
+                }
+
+                // Check if record exists
+                $check_stmt->bind_param('ss', $apogee, $nom_module);
+                $check_stmt->execute();
+                $check_result = $check_stmt->get_result();
+                $exists = $check_result->fetch_row()[0] > 0;
+
+                if ($exists) {
+                    // Update existing record
+                    $update_stmt->bind_param('sssss', $note, $validite, $code_module, $apogee, $nom_module);
+                    if ($update_stmt->execute()) {
+                        $updated_count++;
+                    } else {
+                        $skipped_count++;
+                    }
+                } else {
+                    // Insert new record
+                    $insert_stmt->bind_param('sssss', $apogee, $code_module, $nom_module, $note, $validite);
+                    if ($insert_stmt->execute()) {
+                        $imported_count++;
+                    } else {
+                        $skipped_count++;
+                    }
+                }
+
+                $processed++;
+
+                // Batch commit and progress update
+                if ($processed % $batch_size === 0) {
+                    $conn->commit();
+                    $conn->autocommit(FALSE);
+
+                    $progress = round(($processed / $total_count) * 100);
+                    echo "<script>
+                        if (document.getElementById('progressBar')) {
+                            document.getElementById('progressBar').style.width = '{$progress}%';
+                            document.getElementById('progressText').textContent = 'Traité: {$processed}/{$total_count} - Importés: {$imported_count}, Mis à jour: {$updated_count}';
+                        }
+                    </script>";
+
+                    if (ob_get_level()) ob_flush();
+                    flush();
+
+                    set_time_limit(1800);
+
+                    if (function_exists('gc_collect_cycles')) {
+                        gc_collect_cycles();
+                    }
+                }
+
+            } catch (Exception $e) {
+                $skipped_count++;
+                error_log("Error processing Apogée record: " . $e->getMessage());
+            }
+        }
+
+        // Final commit
+        $conn->commit();
+        $conn->autocommit(TRUE);
+
+        // Close statements
+        $check_stmt->close();
+        $update_stmt->close();
+        $insert_stmt->close();
+
+        echo "<script>
+            if (document.getElementById('progressBar')) {
+                document.getElementById('progressBar').style.width = '100%';
+                document.getElementById('progressText').textContent = 'Terminé! {$total_count} enregistrements traités';
+                setTimeout(function() {
+                    document.querySelector('.progress-container').style.display = 'none';
+                }, 3000);
+            }
+        </script>";
+
+    } catch (Exception $e) {
+        $conn->rollback();
+        throw $e;
+    }
+
+    return [
+        'success' => true,
+        'total' => $total_count,
+        'imported' => $imported_count,
+        'updated' => $updated_count,
+        'skipped' => $skipped_count
+    ];
+}
+
+// ADD THIS FUNCTION to clean and fix JSON syntax issues:
+
+function cleanApogeeJsonFormat($json_data) {
+    // Fix common JSON syntax issues in Apogée exports
+
+    // 1. Fix decimal numbers: replace comma with dot in numeric values
+    $json_data = preg_replace('/("not_elp"\s*:\s*)(\d+),(\d+)/', '$1$2.$3', $json_data);
+
+    // 2. Fix any other numeric fields that might have commas
+    $json_data = preg_replace('/:\s*(\d+),(\d+)(?=\s*[,}\]])/', ':$1.$2', $json_data);
+
+    // 3. Ensure proper closing of arrays and objects
+    // Count opening and closing brackets to detect missing ones
+    $open_brackets = substr_count($json_data, '[');
+    $close_brackets = substr_count($json_data, ']');
+    $open_braces = substr_count($json_data, '{');
+    $close_braces = substr_count($json_data, '}');
+
+    // Add missing closing brackets/braces
+    while ($close_brackets < $open_brackets) {
+        $json_data .= ']';
+        $close_brackets++;
+    }
+
+    while ($close_braces < $open_braces) {
+        $json_data .= '}';
+        $close_braces++;
+    }
+
+    // 4. Remove any trailing commas before closing brackets/braces
+    $json_data = preg_replace('/,(\s*[}\]])/', '$1', $json_data);
+
+    // 5. Ensure the JSON ends properly
+    $json_data = rtrim($json_data);
+
+    return $json_data;
 }
 
 function processOdsImportXmlDirect($conn, $file_path, $table, $session, $result_type) {
@@ -672,6 +962,12 @@ function executeBatchUpdate($conn, $table, $records) {
         }
     }
     return $updatedRows;
+}
+
+function logMemoryUsage($stage) {
+    $memory = round(memory_get_usage() / 1024 / 1024, 2);
+    $peak = round(memory_get_peak_usage() / 1024 / 1024, 2);
+    error_log("Memory usage at $stage: {$memory}MB (Peak: {$peak}MB)");
 }
 
 function processOdsFileDirectly($conn, $file_path, $table, $session) {
@@ -1296,10 +1592,12 @@ document.addEventListener('DOMContentLoaded', function() {
         const fileSize = file.size;
         const maxSize = 50 * 1024 * 1024; // 50MB
 
+        const maxSize = 100 * 1024 * 1024; // 100MB instead of 50MB
+
         // Check file size
         if (fileSize > maxSize) {
             e.preventDefault();
-            alert('Le fichier est trop volumineux. Taille maximale autorisée: 50MB\n' +
+            alert('Le fichier est trop volumineux. Taille maximale autorisée: 100MB\n' +
                   'Taille actuelle: ' + Math.round(fileSize / (1024 * 1024)) + 'MB');
             return false;
         }
@@ -1318,7 +1616,7 @@ document.addEventListener('DOMContentLoaded', function() {
         }
 
         // Large file warning
-        if (fileSize > 5 * 1024 * 1024) { // Files larger than 5MB
+        if (fileSize > 20 * 1024 * 1024) { // Files larger than 20MB
             const confirmed = confirm(
                 'Fichier volumineux détecté (' + Math.round(fileSize / (1024 * 1024)) + 'MB)\n\n' +
                 'L\'import peut prendre plusieurs minutes.\n' +
